@@ -1,9 +1,9 @@
 {
-  "name": "opencode-gemini-auth",
+  "name": "opencode-antigravity-auth",
   "module": "index.ts",
-  "version": "1.2.0",
-  "author": "jenslys",
-  "repository": "https://github.com/jenslys/opencode-gemini-auth",
+  "version": "1.0.0",
+  "author": "shekohex",
+  "repository": "https://github.com/shekohex/opencode-antigravity-auth",
   "files": [
     "index.ts",
     "src"
@@ -11,7 +11,7 @@
   "license": "MIT",
   "type": "module",
   "devDependencies": {
-    "@opencode-ai/plugin": "^0.15.30",
+    "@opencode-ai/plugin": "^1.0.137",
     "@types/bun": "latest"
   },
   "peerDependencies": {
