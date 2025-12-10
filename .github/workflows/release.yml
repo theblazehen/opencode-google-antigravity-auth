@@ -24,7 +24,6 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          always-auth: true
 
       - name: Determine release state
         id: determine
@@ -121,4 +120,5 @@ jobs:
 
       - name: Publish to npm
         if: steps.determine.outputs.changed == 'true' && steps.determine.outputs.tag_exists == 'false'
-        run: npm publish --access public --provenance
+        run: |
+          npm publish --access public --provenance
