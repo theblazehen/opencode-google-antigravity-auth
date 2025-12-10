@@ -1,7 +1,7 @@
 import {
+  ANTIGRAVITY_PROVIDER_ID,
+  CODE_ASSIST_ENDPOINT,
   CODE_ASSIST_HEADERS,
-  GEMINI_CODE_ASSIST_ENDPOINT,
-  GEMINI_PROVIDER_ID,
 } from "../constants";
 import { formatRefreshParts, parseRefreshParts } from "./auth";
 import type {
@@ -16,10 +16,10 @@ const projectContextPendingCache = new Map<string, Promise<ProjectContextResult>
 const CODE_ASSIST_METADATA = {
   ideType: "IDE_UNSPECIFIED",
   platform: "PLATFORM_UNSPECIFIED",
-  pluginType: "GEMINI",
+  pluginType: "ANTIGRAVITY",
 } as const;
 
-interface GeminiUserTier {
+interface AntigravityUserTier {
   id?: string;
   isDefault?: boolean;
   userDefinedCloudaicompanionProject?: boolean;
@@ -30,7 +30,7 @@ interface LoadCodeAssistPayload {
   currentTier?: {
     id?: string;
   };
-  allowedTiers?: GeminiUserTier[];
+  allowedTiers?: AntigravityUserTier[];
 }
 
 interface OnboardUserPayload {
@@ -44,11 +44,11 @@ interface OnboardUserPayload {
 
 class ProjectIdRequiredError extends Error {
   /**
-   * Error raised when a required Google Cloud project is missing during Gemini onboarding.
+   * Error raised when a required Google Cloud project is missing during Antigravity onboarding.
    */
   constructor() {
     super(
-      "Google Gemini requires a Google Cloud project. Enable the Gemini for Google Cloud API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.",
+      "Antigravity requires a Google Cloud project. Enable the Gemini for Google Cloud API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.",
     );
   }
 }
@@ -71,7 +71,7 @@ function buildMetadata(projectId?: string): Record<string, string> {
 /**
  * Selects the default tier ID from the allowed tiers list.
  */
-function getDefaultTierId(allowedTiers?: GeminiUserTier[]): string | undefined {
+function getDefaultTierId(allowedTiers?: AntigravityUserTier[]): string | undefined {
   if (!allowedTiers || allowedTiers.length === 0) {
     return undefined;
   }
@@ -129,7 +129,7 @@ export async function loadManagedProject(
     }
 
     const response = await fetch(
-      `${GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist`,
+      `${CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist`,
       {
         method: "POST",
         headers: {
@@ -147,7 +147,7 @@ export async function loadManagedProject(
 
     return (await response.json()) as LoadCodeAssistPayload;
   } catch (error) {
-    console.error("Failed to load Gemini managed project:", error);
+    console.error("Failed to load Antigravity managed project:", error);
     return null;
   }
 }
@@ -179,7 +179,7 @@ export async function onboardManagedProject(
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetch(
-        `${GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:onboardUser`,
+        `${CODE_ASSIST_ENDPOINT}/v1internal:onboardUser`,
         {
           method: "POST",
           headers: {
@@ -204,7 +204,7 @@ export async function onboardManagedProject(
         return projectId;
       }
     } catch (error) {
-      console.error("Failed to onboard Gemini managed project:", error);
+      console.error("Failed to onboard Antigravity managed project:", error);
       return undefined;
     }
 
@@ -260,7 +260,7 @@ export async function ensureProjectContext(
       };
 
       await client.auth.set({
-        path: { id: GEMINI_PROVIDER_ID },
+        path: { id: ANTIGRAVITY_PROVIDER_ID },
         body: updatedAuth,
       });
 
@@ -295,7 +295,7 @@ export async function ensureProjectContext(
       };
 
       await client.auth.set({
-        path: { id: GEMINI_PROVIDER_ID },
+        path: { id: ANTIGRAVITY_PROVIDER_ID },
         body: updatedAuth,
       });
 

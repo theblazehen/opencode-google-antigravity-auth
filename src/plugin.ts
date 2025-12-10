@@ -1,17 +1,18 @@
-import { GEMINI_PROVIDER_ID, GEMINI_REDIRECT_URI } from "./constants";
-import { authorizeGemini, exchangeGemini } from "./gemini/oauth";
-import type { GeminiTokenExchangeResult } from "./gemini/oauth";
+import { ANTIGRAVITY_PROVIDER_ID, ANTIGRAVITY_REDIRECT_URI } from "./constants";
+import type { AntigravityTokenExchangeResult } from "./gemini/oauth";
+import { authorizeAntigravity, exchangeAntigravity } from "./gemini/oauth";
 import { accessTokenExpired, isOAuthAuth } from "./plugin/auth";
 import { promptProjectId } from "./plugin/cli";
+import { startAntigravityDebugRequest } from "./plugin/debug";
 import { ensureProjectContext } from "./plugin/project";
-import { startGeminiDebugRequest } from "./plugin/debug";
 import {
   isGenerativeLanguageRequest,
-  prepareGeminiRequest,
-  transformGeminiResponse,
+  prepareAntigravityRequest,
+  transformAntigravityResponse,
 } from "./plugin/request";
-import { refreshAccessToken } from "./plugin/token";
+import { getSessionId } from "./plugin/request-helpers";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
+import { refreshAccessToken } from "./plugin/token";
 import type {
   GetAuth,
   LoaderResult,
@@ -22,14 +23,14 @@ import type {
 } from "./plugin/types";
 
 /**
- * Registers the Gemini OAuth provider for Opencode, handling auth, request rewriting,
- * debug logging, and response normalization for Gemini Code Assist endpoints.
+ * Registers the Antigravity OAuth provider for Opencode, handling auth, request rewriting,
+ * debug logging, and response normalization for Antigravity Code Assist endpoints.
  */
-export const GeminiCLIOAuthPlugin = async (
+export const AntigravityOAuthPlugin = async (
   { client }: PluginContext,
 ): Promise<PluginResult> => ({
   auth: {
-    provider: GEMINI_PROVIDER_ID,
+    provider: ANTIGRAVITY_PROVIDER_ID,
     loader: async (getAuth: GetAuth, provider: Provider): Promise<LoaderResult | null> => {
       const auth = await getAuth();
       if (!isOAuthAuth(auth)) {
@@ -91,7 +92,7 @@ export const GeminiCLIOAuthPlugin = async (
             init: transformedInit,
             streaming,
             requestedModel,
-          } = prepareGeminiRequest(
+          } = prepareAntigravityRequest(
             input,
             init,
             accessToken,
@@ -100,7 +101,7 @@ export const GeminiCLIOAuthPlugin = async (
 
           const originalUrl = toUrlString(input);
           const resolvedUrl = toUrlString(request);
-          const debugContext = startGeminiDebugRequest({
+          const debugContext = startAntigravityDebugRequest({
             originalUrl,
             resolvedUrl,
             method: transformedInit.method,
@@ -108,19 +109,20 @@ export const GeminiCLIOAuthPlugin = async (
             body: transformedInit.body,
             streaming,
             projectId: projectContext.effectiveProjectId,
+            sessionId: getSessionId(),
           });
 
           const response = await fetch(request, transformedInit);
-          return transformGeminiResponse(response, streaming, debugContext, requestedModel);
+          return transformAntigravityResponse(response, streaming, debugContext, requestedModel);
         },
       };
     },
     methods: [
       {
-        label: "OAuth with Google (Gemini CLI)",
+        label: "OAuth with Antigravity",
         type: "oauth",
         authorize: async () => {
-          console.log("\n=== Google Gemini OAuth Setup ===");
+          console.log("\n=== Antigravity OAuth Setup ===");
 
           const isHeadless = !!(
             process.env.SSH_CONNECTION ||
@@ -133,7 +135,7 @@ export const GeminiCLIOAuthPlugin = async (
           if (!isHeadless) {
             try {
               listener = await startOAuthListener();
-              const { host } = new URL(GEMINI_REDIRECT_URI);
+              const { host } = new URL(ANTIGRAVITY_REDIRECT_URI);
               console.log("1. You'll be asked to sign in to your Google account and grant permission.");
               console.log(
                 `2. We'll automatically capture the browser redirect on http://${host}. No need to paste anything back here.`,
@@ -159,14 +161,14 @@ export const GeminiCLIOAuthPlugin = async (
             console.log("1. You'll be asked to sign in to your Google account and grant permission.");
             console.log("2. After you approve, the browser will redirect to a 'localhost' URL.");
             console.log(
-              "3. Copy the ENTIRE URL from your browser's address bar (it will look like: http://localhost:8085/oauth2callback?code=...&state=...)",
+              "3. Copy the ENTIRE URL from your browser's address bar (it will look like: http://localhost:51121/oauth-callback?code=...&state=...)",
             );
             console.log("4. Paste the URL back here and press Enter.");
           }
           console.log("\n");
 
           const projectId = await promptProjectId();
-          const authorization = await authorizeGemini(projectId);
+          const authorization = await authorizeAntigravity(projectId);
 
           if (listener) {
             return {
@@ -174,7 +176,7 @@ export const GeminiCLIOAuthPlugin = async (
               instructions:
                 "Complete the sign-in flow in your browser. We'll automatically detect the redirect back to localhost.",
               method: "auto",
-              callback: async (): Promise<GeminiTokenExchangeResult> => {
+              callback: async (): Promise<AntigravityTokenExchangeResult> => {
                 try {
                   const callbackUrl = await listener.waitForCallback();
                   const code = callbackUrl.searchParams.get("code");
@@ -187,7 +189,7 @@ export const GeminiCLIOAuthPlugin = async (
                     };
                   }
 
-                  return await exchangeGemini(code, state);
+                  return await exchangeAntigravity(code, state);
                 } catch (error) {
                   return {
                     type: "failed",
@@ -206,9 +208,9 @@ export const GeminiCLIOAuthPlugin = async (
           return {
             url: authorization.url,
             instructions:
-              "Visit the URL above, complete OAuth, ignore the localhost connection error, and paste the full redirected URL (e.g., http://localhost:8085/oauth2callback?code=...&state=...): ",
+              "Visit the URL above, complete OAuth, ignore the localhost connection error, and paste the full redirected URL (e.g., http://localhost:51121/oauth-callback?code=...&state=...): ",
             method: "code",
-            callback: async (callbackUrl: string): Promise<GeminiTokenExchangeResult> => {
+            callback: async (callbackUrl: string): Promise<AntigravityTokenExchangeResult> => {
               try {
                 const url = new URL(callbackUrl);
                 const code = url.searchParams.get("code");
@@ -221,7 +223,7 @@ export const GeminiCLIOAuthPlugin = async (
                   };
                 }
 
-                return exchangeGemini(code, state);
+                return exchangeAntigravity(code, state);
               } catch (error) {
                 return {
                   type: "failed",
@@ -233,7 +235,7 @@ export const GeminiCLIOAuthPlugin = async (
         },
       },
       {
-        provider: GEMINI_PROVIDER_ID,
+        provider: ANTIGRAVITY_PROVIDER_ID,
         label: "Manually enter API Key",
         type: "api",
       },
@@ -241,7 +243,7 @@ export const GeminiCLIOAuthPlugin = async (
   },
 });
 
-export const GoogleOAuthPlugin = GeminiCLIOAuthPlugin;
+export const GoogleOAuthPlugin = AntigravityOAuthPlugin;
 
 function toUrlString(value: RequestInfo): string {
   if (typeof value === "string") {

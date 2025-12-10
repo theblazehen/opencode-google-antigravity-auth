@@ -1,10 +1,10 @@
 import { generatePKCE } from "@openauthjs/openauth/pkce";
 
 import {
-  GEMINI_CLIENT_ID,
-  GEMINI_CLIENT_SECRET,
-  GEMINI_REDIRECT_URI,
-  GEMINI_SCOPES,
+    ANTIGRAVITY_CLIENT_ID,
+    ANTIGRAVITY_CLIENT_SECRET,
+    ANTIGRAVITY_REDIRECT_URI,
+    ANTIGRAVITY_SCOPES,
 } from "../constants";
 
 interface PkcePair {
@@ -12,21 +12,18 @@ interface PkcePair {
   verifier: string;
 }
 
-interface GeminiAuthState {
+interface AntigravityAuthState {
   verifier: string;
   projectId: string;
 }
 
-/**
- * Result returned to the caller after constructing an OAuth authorization URL.
- */
-export interface GeminiAuthorization {
+export interface AntigravityAuthorization {
   url: string;
   verifier: string;
   projectId: string;
 }
 
-interface GeminiTokenExchangeSuccess {
+interface AntigravityTokenExchangeSuccess {
   type: "success";
   refresh: string;
   access: string;
@@ -35,36 +32,30 @@ interface GeminiTokenExchangeSuccess {
   projectId: string;
 }
 
-interface GeminiTokenExchangeFailure {
+interface AntigravityTokenExchangeFailure {
   type: "failed";
   error: string;
 }
 
-export type GeminiTokenExchangeResult =
-  | GeminiTokenExchangeSuccess
-  | GeminiTokenExchangeFailure;
+export type AntigravityTokenExchangeResult =
+  | AntigravityTokenExchangeSuccess
+  | AntigravityTokenExchangeFailure;
 
-interface GeminiTokenResponse {
+interface AntigravityTokenResponse {
   access_token: string;
   expires_in: number;
   refresh_token: string;
 }
 
-interface GeminiUserInfo {
+interface AntigravityUserInfo {
   email?: string;
 }
 
-/**
- * Encode an object into a URL-safe base64 string.
- */
-function encodeState(payload: GeminiAuthState): string {
+function encodeState(payload: AntigravityAuthState): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
-/**
- * Decode an OAuth state parameter back into its structured representation.
- */
-function decodeState(state: string): GeminiAuthState {
+function decodeState(state: string): AntigravityAuthState {
   const normalized = state.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), "=");
   const json = Buffer.from(padded, "base64").toString("utf8");
@@ -78,17 +69,14 @@ function decodeState(state: string): GeminiAuthState {
   };
 }
 
-/**
- * Build the Gemini OAuth authorization URL including PKCE and optional project metadata.
- */
-export async function authorizeGemini(projectId = ""): Promise<GeminiAuthorization> {
+export async function authorizeAntigravity(projectId = ""): Promise<AntigravityAuthorization> {
   const pkce = (await generatePKCE()) as PkcePair;
 
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  url.searchParams.set("client_id", GEMINI_CLIENT_ID);
+  url.searchParams.set("client_id", ANTIGRAVITY_CLIENT_ID);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("redirect_uri", GEMINI_REDIRECT_URI);
-  url.searchParams.set("scope", GEMINI_SCOPES.join(" "));
+  url.searchParams.set("redirect_uri", ANTIGRAVITY_REDIRECT_URI);
+  url.searchParams.set("scope", ANTIGRAVITY_SCOPES.join(" "));
   url.searchParams.set("code_challenge", pkce.challenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set(
@@ -105,13 +93,10 @@ export async function authorizeGemini(projectId = ""): Promise<GeminiAuthorizati
   };
 }
 
-/**
- * Exchange an authorization code for Gemini CLI access and refresh tokens.
- */
-export async function exchangeGemini(
+export async function exchangeAntigravity(
   code: string,
   state: string,
-): Promise<GeminiTokenExchangeResult> {
+): Promise<AntigravityTokenExchangeResult> {
   try {
     const { verifier, projectId } = decodeState(state);
 
@@ -121,11 +106,11 @@ export async function exchangeGemini(
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
-        client_id: GEMINI_CLIENT_ID,
-        client_secret: GEMINI_CLIENT_SECRET,
+        client_id: ANTIGRAVITY_CLIENT_ID,
+        client_secret: ANTIGRAVITY_CLIENT_SECRET,
         code,
         grant_type: "authorization_code",
-        redirect_uri: GEMINI_REDIRECT_URI,
+        redirect_uri: ANTIGRAVITY_REDIRECT_URI,
         code_verifier: verifier,
       }),
     });
@@ -135,7 +120,7 @@ export async function exchangeGemini(
       return { type: "failed", error: errorText };
     }
 
-    const tokenPayload = (await tokenResponse.json()) as GeminiTokenResponse;
+    const tokenPayload = (await tokenResponse.json()) as AntigravityTokenResponse;
 
     const userInfoResponse = await fetch(
       "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
@@ -147,7 +132,7 @@ export async function exchangeGemini(
     );
 
     const userInfo = userInfoResponse.ok
-      ? ((await userInfoResponse.json()) as GeminiUserInfo)
+      ? ((await userInfoResponse.json()) as AntigravityUserInfo)
       : {};
 
     const refreshToken = tokenPayload.refresh_token;
@@ -155,7 +140,8 @@ export async function exchangeGemini(
       return { type: "failed", error: "Missing refresh token in response" };
     }
 
-    const storedRefresh = `${refreshToken}|${projectId || ""}`;
+    const email = userInfo.email || "";
+    const storedRefresh = `${refreshToken}|${projectId || ""}|${email}`;
 
     return {
       type: "success",

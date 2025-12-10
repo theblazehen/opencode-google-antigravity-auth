@@ -1,4 +1,4 @@
-import type { GeminiTokenExchangeResult } from "../gemini/oauth";
+import type { AntigravityTokenExchangeResult } from "../gemini/oauth";
 
 export interface OAuthAuthDetails {
   type: "oauth";
@@ -41,7 +41,7 @@ export interface AuthMethod {
     url: string;
     instructions: string;
     method: string;
-    callback: (callbackUrl: string) => Promise<GeminiTokenExchangeResult>;
+    callback: (callbackUrl: string) => Promise<AntigravityTokenExchangeResult>;
   }>;
 }
 

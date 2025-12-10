@@ -1,14 +1,15 @@
 export {
-  GeminiCLIOAuthPlugin,
-  GoogleOAuthPlugin,
+  AntigravityOAuthPlugin,
+  GoogleOAuthPlugin
 } from "./src/plugin";
 
 export {
-  authorizeGemini,
-  exchangeGemini,
+  authorizeAntigravity,
+  exchangeAntigravity
 } from "./src/gemini/oauth";
 
 export type {
-  GeminiAuthorization,
-  GeminiTokenExchangeResult,
+  AntigravityAuthorization,
+  AntigravityTokenExchangeResult
 } from "./src/gemini/oauth";
+

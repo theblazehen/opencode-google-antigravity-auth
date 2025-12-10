@@ -1,10 +1,10 @@
 import {
-  GEMINI_CLIENT_ID,
-  GEMINI_CLIENT_SECRET,
-  GEMINI_PROVIDER_ID,
+  ANTIGRAVITY_CLIENT_ID,
+  ANTIGRAVITY_CLIENT_SECRET,
+  ANTIGRAVITY_PROVIDER_ID
 } from "../constants";
 import { formatRefreshParts, parseRefreshParts } from "./auth";
-import { clearCachedAuth, storeCachedAuth } from "./cache";
+import { storeCachedAuth } from "./cache";
 import { invalidateProjectContextCache } from "./project";
 import type { OAuthAuthDetails, PluginClient, RefreshParts } from "./types";
 
@@ -59,7 +59,7 @@ function parseOAuthErrorPayload(text: string | undefined): { code?: string; desc
 }
 
 /**
- * Refreshes a Gemini OAuth access token, updates persisted credentials, and handles revocation.
+ * Refreshes an Antigravity OAuth access token, updates persisted credentials, and handles revocation.
  */
 export async function refreshAccessToken(
   auth: OAuthAuthDetails,
@@ -79,8 +79,8 @@ export async function refreshAccessToken(
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: parts.refreshToken,
-        client_id: GEMINI_CLIENT_ID,
-        client_secret: GEMINI_CLIENT_SECRET,
+        client_id: ANTIGRAVITY_CLIENT_ID,
+        client_secret: ANTIGRAVITY_CLIENT_SECRET,
       }),
     });
 
@@ -94,12 +94,12 @@ export async function refreshAccessToken(
 
       const { code, description } = parseOAuthErrorPayload(errorText);
       const details = [code, description ?? errorText].filter(Boolean).join(": ");
-      const baseMessage = `Gemini token refresh failed (${response.status} ${response.statusText})`;
-      console.warn(`[Gemini OAuth] ${details ? `${baseMessage} - ${details}` : baseMessage}`);
+      const baseMessage = `Antigravity token refresh failed (${response.status} ${response.statusText})`;
+      console.warn(`[Antigravity OAuth] ${details ? `${baseMessage} - ${details}` : baseMessage}`);
 
       if (code === "invalid_grant") {
         console.warn(
-          "[Gemini OAuth] Google revoked the stored refresh token. Run `opencode auth login` and reauthenticate the Google provider.",
+          "[Antigravity OAuth] Google revoked the stored refresh token. Run `opencode auth login` and reauthenticate the Google provider.",
         );
         invalidateProjectContextCache(auth.refresh);
         try {
@@ -112,11 +112,11 @@ export async function refreshAccessToken(
             }),
           };
           await client.auth.set({
-            path: { id: GEMINI_PROVIDER_ID },
+            path: { id: ANTIGRAVITY_PROVIDER_ID },
             body: clearedAuth,
           });
         } catch (storeError) {
-          console.error("Failed to clear stored Gemini OAuth credentials:", storeError);
+          console.error("Failed to clear stored Antigravity OAuth credentials:", storeError);
         }
       }
 
@@ -147,16 +147,16 @@ export async function refreshAccessToken(
 
     try {
       await client.auth.set({
-        path: { id: GEMINI_PROVIDER_ID },
+        path: { id: ANTIGRAVITY_PROVIDER_ID },
         body: updatedAuth,
       });
     } catch (storeError) {
-      console.error("Failed to persist refreshed Gemini OAuth credentials:", storeError);
+      console.error("Failed to persist refreshed Antigravity OAuth credentials:", storeError);
     }
 
     return updatedAuth;
   } catch (error) {
-    console.error("Failed to refresh Gemini access token due to an unexpected error:", error);
+    console.error("Failed to refresh Antigravity access token due to an unexpected error:", error);
     return undefined;
   }
 }

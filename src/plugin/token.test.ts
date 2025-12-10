@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
-import { GEMINI_PROVIDER_ID } from "../constants";
+import { ANTIGRAVITY_PROVIDER_ID } from "../constants";
 import { refreshAccessToken } from "./token";
 import type { OAuthAuthDetails, PluginClient } from "./types";
 
@@ -26,7 +26,7 @@ describe("refreshAccessToken", () => {
     mock.restore();
   });
 
-  it("updates the caller but skips persisting when refresh token is unchanged", async () => {
+  it("updates the caller and persists the refreshed token", async () => {
     const client = createClient();
     const fetchMock = mock(async () => {
       return new Response(
@@ -42,7 +42,7 @@ describe("refreshAccessToken", () => {
     const result = await refreshAccessToken(baseAuth, client);
 
     expect(result?.access).toBe("new-access");
-    expect(client.auth.set.mock.calls.length).toBe(0);
+    expect(client.auth.set.mock.calls.length).toBe(1);
   });
 
   it("persists when Google rotates the refresh token", async () => {
@@ -64,7 +64,7 @@ describe("refreshAccessToken", () => {
     expect(result?.access).toBe("next-access");
     expect(client.auth.set.mock.calls.length).toBe(1);
     expect(client.auth.set.mock.calls[0]?.[0]).toEqual({
-      path: { id: GEMINI_PROVIDER_ID },
+      path: { id: ANTIGRAVITY_PROVIDER_ID },
       body: expect.objectContaining({
         type: "oauth",
         refresh: expect.stringContaining("rotated-token"),
