@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { accessTokenExpired } from "./auth";
 import type { OAuthAuthDetails } from "./types";
 
@@ -69,11 +70,12 @@ export function clearCachedAuth(refresh?: string): void {
 const signatureCache = new Map<string, string>();
 
 /**
- * Generates a cache key for a thought block.
- * We use the full text to ensure uniqueness, scoped by session.
+ * Generates a SHA-256 hash key for a thought block.
+ * We hash (sessionId + ":" + thoughtText) to ensure uniqueness and constant key size.
  */
 function getSignatureKey(sessionId: string, thoughtText: string): string {
-  return `${sessionId}:${thoughtText}`;
+  const input = `${sessionId}:${thoughtText}`;
+  return createHash("sha256").update(input).digest("hex");
 }
 
 /**
