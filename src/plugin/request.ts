@@ -92,6 +92,13 @@ function transformSseLine(line: string, onError?: (body: GeminiApiBody) => Gemin
       if (responseStr.includes('"thought"') || responseStr.includes('"thinking"')) {
         debugLog("[SSE Transform] Found thinking content in response:", responseStr.slice(0, 500));
       }
+      const responseObj = body.response as Record<string, unknown>;
+      if (responseObj.usageMetadata) {
+        const usage = responseObj.usageMetadata as Record<string, unknown>;
+        if (typeof usage.cachedContentTokenCount === "number" && usage.cachedContentTokenCount > 0) {
+          debugLog(`[Antigravity Cache] SSE Cache HIT - ${usage.cachedContentTokenCount} tokens from cache`);
+        }
+      }
       return `data: ${JSON.stringify(body.response)}`;
     }
   } catch (_) { }
@@ -416,7 +423,17 @@ export async function transformAntigravityResponse(
     const effectiveBody = patched ?? parsed ?? undefined;
 
     const usage = usageFromSse ?? (effectiveBody ? extractUsageMetadata(effectiveBody) : null);
+    if (usage) {
+      debugLog("[Antigravity Cache] Usage metadata:", {
+        cachedContentTokenCount: usage.cachedContentTokenCount,
+        promptTokenCount: usage.promptTokenCount,
+        candidatesTokenCount: usage.candidatesTokenCount,
+        totalTokenCount: usage.totalTokenCount,
+        cacheHit: (usage.cachedContentTokenCount ?? 0) > 0,
+      });
+    }
     if (usage?.cachedContentTokenCount !== undefined) {
+      debugLog(`[Antigravity Cache] Cache HIT - ${usage.cachedContentTokenCount} tokens served from cache`);
       headers.set("x-gemini-cached-content-token-count", String(usage.cachedContentTokenCount));
       if (usage.totalTokenCount !== undefined) {
         headers.set("x-gemini-total-token-count", String(usage.totalTokenCount));
