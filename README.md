@@ -61,6 +61,14 @@ Antigravity forwards Gemini model options, including `thinkingConfig`:
               "includeThoughts": true
             }
           }
+        },
+        "gemini-claude-opus-4-5-thinking": {
+          "options": {
+            "thinkingConfig": {
+              "thinkingBudget": 32000,
+              "includeThoughts": true
+            }
+          }
         }
       }
     }
@@ -148,23 +156,65 @@ You should copy that config to your opencode config file.
           "cost": { "input": 0.1, "output": 0.4, "cache_read": 0.025 },
           "modalities": { "input": ["text", "image", "audio", "video", "pdf"], "output": ["text"] }
         },
-        "gemini-claude-sonnet-4-5-thinking": {
+        "gemini-claude-sonnet-4-5-thinking-high": {
           "id": "gemini-claude-sonnet-4-5-thinking",
-          "name": "Claude Sonnet 4.5 Thinking",
+          "name": "Claude Sonnet 4.5 (High Thinking)",
           "release_date": "2025-11-18",
           "reasoning": true,
           "limit": { "context": 200000, "output": 64000 },
           "cost": { "input": 3, "output": 15, "cache_read": 0.3 },
-          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "options": { "thinkingConfig": { "thinkingBudget": 32000, "includeThoughts": true } }
         },
-        "gemini-claude-opus-4-5-thinking": {
+        "gemini-claude-sonnet-4-5-thinking-medium": {
+          "id": "gemini-claude-sonnet-4-5-thinking",
+          "name": "Claude Sonnet 4.5 (Medium Thinking)",
+          "release_date": "2025-11-18",
+          "reasoning": true,
+          "limit": { "context": 200000, "output": 64000 },
+          "cost": { "input": 3, "output": 15, "cache_read": 0.3 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "options": { "thinkingConfig": { "thinkingBudget": 16000, "includeThoughts": true } }
+        },
+        "gemini-claude-sonnet-4-5-thinking-low": {
+          "id": "gemini-claude-sonnet-4-5-thinking",
+          "name": "Claude Sonnet 4.5 (Low Thinking)",
+          "release_date": "2025-11-18",
+          "reasoning": true,
+          "limit": { "context": 200000, "output": 64000 },
+          "cost": { "input": 3, "output": 15, "cache_read": 0.3 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "options": { "thinkingConfig": { "thinkingBudget": 4000, "includeThoughts": true } }
+        },
+        "gemini-claude-opus-4-5-thinking-high": {
           "id": "gemini-claude-opus-4-5-thinking",
-          "name": "Claude Opus 4.5 Thinking",
+          "name": "Claude Opus 4.5 (High Thinking)",
           "release_date": "2025-11-24",
           "reasoning": true,
           "limit": { "context": 200000, "output": 64000 },
           "cost": { "input": 5, "output": 25, "cache_read": 0.5 },
-          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] }
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "options": { "thinkingConfig": { "thinkingBudget": 32000, "includeThoughts": true } }
+        },
+        "gemini-claude-opus-4-5-thinking-medium": {
+          "id": "gemini-claude-opus-4-5-thinking",
+          "name": "Claude Opus 4.5 (Medium Thinking)",
+          "release_date": "2025-11-24",
+          "reasoning": true,
+          "limit": { "context": 200000, "output": 64000 },
+          "cost": { "input": 5, "output": 25, "cache_read": 0.5 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "options": { "thinkingConfig": { "thinkingBudget": 16000, "includeThoughts": true } }
+        },
+        "gemini-claude-opus-4-5-thinking-low": {
+          "id": "gemini-claude-opus-4-5-thinking",
+          "name": "Claude Opus 4.5 (Low Thinking)",
+          "release_date": "2025-11-24",
+          "reasoning": true,
+          "limit": { "context": 200000, "output": 64000 },
+          "cost": { "input": 5, "output": 25, "cache_read": 0.5 },
+          "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
+          "options": { "thinkingConfig": { "thinkingBudget": 4000, "includeThoughts": true } }
         }
       }
     }

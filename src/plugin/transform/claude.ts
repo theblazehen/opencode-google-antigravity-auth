@@ -52,7 +52,7 @@ export function transformClaudeRequest(
   if (isThinkingModel) {
     if (!normalizedThinking) {
       normalizedThinking = {
-        thinkingBudget: 1024, // Default budget for thinking models if not specified
+        thinkingBudget: 16384, // Default to 16k for thinking models
         include_thoughts: true,
       };
     } else {
@@ -60,23 +60,47 @@ export function transformClaudeRequest(
       if (normalizedThinking.include_thoughts === undefined) {
         normalizedThinking.include_thoughts = true;
       }
+      
       // Ensure budget is set for thinking models
       if (normalizedThinking.thinkingBudget === undefined || normalizedThinking.thinkingBudget === 0) {
-        normalizedThinking.thinkingBudget = 1024;
+        normalizedThinking.thinkingBudget = 16384; // Default to 16k for thinking models
       }
     }
-  }
 
-  if (normalizedThinking) {
-    if (rawGenerationConfig) {
-      rawGenerationConfig.thinkingConfig = normalizedThinking;
+    if (normalizedThinking) {
+      // Create a clean config object with verified keys
+      // Force snake_case for Antigravity backend to ensure it propagates correctly
+      const finalThinkingConfig: Record<string, unknown> = {
+        include_thoughts: normalizedThinking.include_thoughts ?? true,
+      };
+
+      if (normalizedThinking.thinkingBudget) {
+        finalThinkingConfig.thinking_budget = normalizedThinking.thinkingBudget;
+      }
+
+      if (rawGenerationConfig) {
+        rawGenerationConfig.thinkingConfig = finalThinkingConfig;
+        requestPayload.generationConfig = rawGenerationConfig;
+      } else {
+        requestPayload.generationConfig = { thinkingConfig: finalThinkingConfig };
+      }
+    } else if (rawGenerationConfig?.thinkingConfig) {
+      delete rawGenerationConfig.thinkingConfig;
       requestPayload.generationConfig = rawGenerationConfig;
-    } else {
-      requestPayload.generationConfig = { thinkingConfig: normalizedThinking };
     }
-  } else if (rawGenerationConfig?.thinkingConfig) {
-    delete rawGenerationConfig.thinkingConfig;
-    requestPayload.generationConfig = rawGenerationConfig;
+  } else {
+    // Non-thinking models
+    if (normalizedThinking) {
+      if (rawGenerationConfig) {
+        rawGenerationConfig.thinkingConfig = normalizedThinking;
+        requestPayload.generationConfig = rawGenerationConfig;
+      } else {
+        requestPayload.generationConfig = { thinkingConfig: normalizedThinking };
+      }
+    } else if (rawGenerationConfig?.thinkingConfig) {
+      delete rawGenerationConfig.thinkingConfig;
+      requestPayload.generationConfig = rawGenerationConfig;
+    }
   }
 
   if ("system_instruction" in requestPayload) {
@@ -226,6 +250,7 @@ export function transformClaudeRequest(
     }
 
     debugLog(`${DEBUG_PREFIX} Final transformed contents:`, JSON.stringify(contents, null, 2));
+    debugLog(`${DEBUG_PREFIX} Final generationConfig:`, JSON.stringify(requestPayload.generationConfig, null, 2));
   }
 
 
