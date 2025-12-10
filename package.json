@@ -4,6 +4,16 @@
   "version": "0.1.5",
   "description": "Opencode plugin providing Antigravity OAuth for Gemini models",
   "author": "shekohex",
+  "keywords": [
+    "opencode",
+    "google",
+    "gemini",
+    "oauth",
+    "authentication",
+    "antigravity",
+    "ai",
+    "plugin"
+  ],
   "repository": "https://github.com/shekohex/opencode-google-antigravity-auth",
   "files": [
     "index.ts",
