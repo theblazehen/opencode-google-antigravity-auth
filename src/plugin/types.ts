@@ -1,3 +1,4 @@
+import type { PluginInput } from "@opencode-ai/plugin";
 import type { AntigravityTokenExchangeResult } from "../gemini/oauth";
 
 export interface OAuthAuthDetails {
@@ -45,7 +46,7 @@ export interface AuthMethod {
   }>;
 }
 
-export interface PluginClient {
+export type PluginClient = PluginInput['client'] & {
   auth: {
     set(input: { path: { id: string }; body: OAuthAuthDetails }): Promise<void>;
   };

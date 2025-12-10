@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-const SESSION_ID = `-${Math.floor(Math.random() * 9_000_000_000_000_000_000)}`;
+const SESSION_ID = `-${Math.floor(Math.random() * 9_000_000_000_000_000)}`;
 
 export function getSessionId(): string {
   return SESSION_ID;
@@ -201,8 +201,89 @@ function needsPreviewAccessOverride(
     return true;
   }
 
-  const errorMessage = typeof body.error?.message === "string" ? body.error.message : "";
+  const errorMessage = body.error && typeof body.error.message === "string" ? body.error.message : "";
   return isGeminiThreeModel(errorMessage);
+}
+
+interface ErrorDetail {
+  "@type": string;
+  reason?: string;
+  domain?: string;
+  metadata?: {
+    quotaResetDelay?: string;
+    quotaResetTimeStamp?: string;
+    model?: string;
+    [key: string]: string | undefined;
+  };
+  retryDelay?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Enhanced error handling for rate limits (429/Resource Exhausted).
+ * Extracts quota reset time and formats a friendly message.
+ */
+export function rewriteGeminiRateLimitError(
+  body: GeminiApiBody,
+): GeminiApiBody | null {
+  const error: GeminiApiError = body.error ?? {};
+  
+  // Check if it's a rate limit error (429 or RESOURCE_EXHAUSTED)
+  const isRateLimit = error.code === 429 || error.status === "RESOURCE_EXHAUSTED";
+  if (!isRateLimit) {
+    return null;
+  }
+
+  const details = (error.details as ErrorDetail[]) ?? [];
+  const quotaInfo = details.find(d => d.reason === "QUOTA_EXHAUSTED");
+  
+  const rawDelay = quotaInfo?.metadata?.quotaResetDelay;
+  if (typeof rawDelay !== "string" || !rawDelay) {
+    return null;
+  }
+  const resetDelay = rawDelay as string;
+
+  let friendlyDuration = "";
+
+  // Try parsing complex duration first (e.g. 3h11m29s)
+  if (resetDelay.includes('h') || resetDelay.includes('m')) {
+    friendlyDuration = (resetDelay.split('.')[0] ?? "")
+      .replace('h', ' hours ')
+      .replace('m', ' minutes ')
+      .replace('s', ' seconds');
+  } else {
+    // Fallback to simpler seconds parsing
+    const secondsMatch = resetDelay.match(/^([\d.]+)s$/);
+    if (secondsMatch && secondsMatch[1]) {
+      const seconds = parseFloat(secondsMatch[1]);
+      if (!isNaN(seconds)) {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const remainingSeconds = Math.floor(seconds % 60);
+        
+        const parts = [];
+        if (hours > 0) parts.push(`${hours} hours`);
+        if (minutes > 0) parts.push(`${minutes} minutes`);
+        if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds} seconds`);
+        
+        friendlyDuration = parts.join(" ");
+      }
+    }
+  }
+
+  if (!friendlyDuration) {
+    return null;
+  }
+
+  const enhancedMessage = `You have exhausted your capacity on this model. Your quota will reset in approximately ${friendlyDuration}.`;
+
+  return {
+    ...body,
+    error: {
+      ...error,
+      message: enhancedMessage,
+    },
+  };
 }
 
 function isGeminiThreeModel(target?: string): boolean {
