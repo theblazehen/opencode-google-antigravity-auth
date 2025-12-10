@@ -47,6 +47,7 @@ export interface ThinkingConfig {
   thinkingBudget?: number;
   thinkingLevel?: string;
   includeThoughts?: boolean;
+  include_thoughts?: boolean;
 }
 
 /**
@@ -79,7 +80,7 @@ export function normalizeThinkingConfig(config: unknown): ThinkingConfig | undef
     normalized.thinkingLevel = thinkingLevel;
   }
   if (includeThoughts !== undefined) {
-    normalized.includeThoughts = includeThoughts;
+    normalized.include_thoughts = includeThoughts;
   }
   return normalized;
 }

@@ -44,7 +44,28 @@ export function transformClaudeRequest(
   }
 
   const rawGenerationConfig = requestPayload.generationConfig as Record<string, unknown> | undefined;
-  const normalizedThinking = normalizeThinkingConfig(rawGenerationConfig?.thinkingConfig);
+  
+  let normalizedThinking = normalizeThinkingConfig(rawGenerationConfig?.thinkingConfig);
+  const isThinkingModel = context.model.includes("-thinking");
+
+  if (isThinkingModel) {
+    if (!normalizedThinking) {
+      normalizedThinking = {
+        thinkingBudget: 1024, // Default budget for thinking models if not specified
+        include_thoughts: true,
+      };
+    } else {
+      // If include_thoughts (snake_case) is missing, enable it
+      if (normalizedThinking.include_thoughts === undefined) {
+        normalizedThinking.include_thoughts = true;
+      }
+      // Ensure budget is set for thinking models
+      if (normalizedThinking.thinkingBudget === undefined || normalizedThinking.thinkingBudget === 0) {
+        normalizedThinking.thinkingBudget = 1024;
+      }
+    }
+  }
+
   if (normalizedThinking) {
     if (rawGenerationConfig) {
       rawGenerationConfig.thinkingConfig = normalizedThinking;

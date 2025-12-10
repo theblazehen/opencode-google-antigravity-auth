@@ -198,18 +198,40 @@ export async function prepareAntigravityRequest(
     try {
       const parsedBody = JSON.parse(baseInit.body) as Record<string, unknown>;
       const isWrapped = typeof parsedBody.project === "string" && "request" in parsedBody;
+      const isClaudeModel = effectiveModel.includes("claude");
 
       if (isWrapped) {
-        const wrappedBody = {
-          ...parsedBody,
-          model: effectiveModel,
-          userAgent: "antigravity",
-          requestId: generateRequestId(),
-        } as Record<string, unknown>;
-        if (wrappedBody.request && typeof wrappedBody.request === "object") {
-          (wrappedBody.request as Record<string, unknown>).sessionId = getSessionId();
+        if (isClaudeModel) {
+            const context: TransformContext = {
+                model: effectiveModel,
+                projectId: (parsedBody.project as string) || projectId,
+                streaming,
+                requestId: generateRequestId(),
+                sessionId: getSessionId(),
+            };
+            const innerRequest = parsedBody.request as Record<string, unknown>;
+            const result = transformClaudeRequest(context, innerRequest);
+            body = result.body;
+            transformDebugInfo = result.debugInfo;
+
+            if (transformDebugInfo) {
+                debugLog(`[Antigravity Transform] Using ${transformDebugInfo.transformer} transformer for model: ${effectiveModel} (wrapped input)`);
+                if (transformDebugInfo.toolCount !== undefined) {
+                    debugLog(`[Antigravity Transform] Tool count: ${transformDebugInfo.toolCount}`);
+                }
+            }
+        } else {
+            const wrappedBody = {
+            ...parsedBody,
+            model: effectiveModel,
+            userAgent: "antigravity",
+            requestId: generateRequestId(),
+            } as Record<string, unknown>;
+            if (wrappedBody.request && typeof wrappedBody.request === "object") {
+            (wrappedBody.request as Record<string, unknown>).sessionId = getSessionId();
+            }
+            body = JSON.stringify(wrappedBody);
         }
-        body = JSON.stringify(wrappedBody);
       } else {
         const context: TransformContext = {
           model: effectiveModel,
@@ -219,7 +241,6 @@ export async function prepareAntigravityRequest(
           sessionId: getSessionId(),
         };
 
-        const isClaudeModel = effectiveModel.includes("claude");
         const result = isClaudeModel
           ? transformClaudeRequest(context, parsedBody)
           : transformGeminiRequest(context, parsedBody);
