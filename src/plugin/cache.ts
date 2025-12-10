@@ -85,13 +85,6 @@ function getSignatureKey(sessionId: string, thoughtText: string): string {
 export function cacheSignature(sessionId: string, thoughtText: string, signature: string): void {
   const key = getSignatureKey(sessionId, thoughtText);
   signatureCache.set(key, signature);
-  
-  // Prevent unbounded growth
-  if (signatureCache.size > 1000) {
-    // Delete the first inserted item (Map iterates in insertion order)
-    const firstKey = signatureCache.keys().next().value;
-    if (firstKey) signatureCache.delete(firstKey);
-  }
 }
 
 /**
