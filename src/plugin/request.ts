@@ -32,33 +32,28 @@ const MODEL_FALLBACKS: Record<string, string> = {
   "gemini-2.5-flash-image": "gemini-2.5-flash",
 };
 
-export function isGenerativeLanguageRequest(input: RequestInfo): input is string {
-  return typeof input === "string" && input.includes("generativelanguage.googleapis.com");
+export function isGenerativeLanguageRequest(input: RequestInfo): boolean {
+  if (typeof input === "string") {
+    return input.includes("generativelanguage.googleapis.com");
+  }
+  if (input instanceof Request) {
+    return input.url.includes("generativelanguage.googleapis.com");
+  }
+  // Fallback for object-like RequestInfo that might not be instanceof Request (e.g. node-fetch polyfills)
+  if (typeof input === "object" && input !== null && "url" in input) {
+    return (input as { url: string }).url.includes("generativelanguage.googleapis.com");
+  }
+  return false;
 }
 
-function transformStreamingPayload(payload: string): string {
+function transformStreamingPayload(payload: string, onError?: (body: GeminiApiBody) => GeminiApiBody | null): string {
   return payload
     .split("\n")
-    .map((line) => {
-      if (!line.startsWith("data:")) {
-        return line;
-      }
-      const json = line.slice(5).trim();
-      if (!json) {
-        return line;
-      }
-      try {
-        const parsed = JSON.parse(json) as { response?: unknown };
-        if (parsed.response !== undefined) {
-          return `data: ${JSON.stringify(parsed.response)}`;
-        }
-      } catch (_) { }
-      return line;
-    })
+    .map((line) => transformSseLine(line, onError))
     .join("\n");
 }
 
-function transformSseLine(line: string): string {
+function transformSseLine(line: string, onError?: (body: GeminiApiBody) => GeminiApiBody | null): string {
   if (!line.startsWith("data:")) {
     return line;
   }
@@ -67,19 +62,38 @@ function transformSseLine(line: string): string {
     return line;
   }
   try {
-    const parsed = JSON.parse(json) as { response?: unknown };
-    if (parsed.response !== undefined) {
-      const responseStr = JSON.stringify(parsed.response);
+    let parsed = JSON.parse(json) as unknown;
+    
+    // Handle array-wrapped responses
+    if (Array.isArray(parsed)) {
+      parsed = parsed.find((item) => typeof item === "object" && item !== null);
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+      return line;
+    }
+
+    const body = parsed as GeminiApiBody;
+
+    if (body.error) {
+      const rewritten = onError?.(body);
+      if (rewritten) {
+        return `data: ${JSON.stringify(rewritten)}`;
+      }
+    }
+
+    if (body.response !== undefined) {
+      const responseStr = JSON.stringify(body.response);
       if (responseStr.includes('"thought"') || responseStr.includes('"thinking"')) {
         debugLog("[SSE Transform] Found thinking content in response:", responseStr.slice(0, 500));
       }
-      return `data: ${JSON.stringify(parsed.response)}`;
+      return `data: ${JSON.stringify(body.response)}`;
     }
   } catch (_) { }
   return line;
 }
 
-export function createSseTransformStream(): TransformStream<string, string> {
+export function createSseTransformStream(onError?: (body: GeminiApiBody) => GeminiApiBody | null): TransformStream<string, string> {
   let buffer = "";
 
   return new TransformStream<string, string>({
@@ -89,13 +103,13 @@ export function createSseTransformStream(): TransformStream<string, string> {
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
-        const transformed = transformSseLine(line);
+        const transformed = transformSseLine(line, onError);
         controller.enqueue(transformed + "\n");
       }
     },
     flush(controller) {
       if (buffer.length > 0) {
-        const transformed = transformSseLine(buffer);
+        const transformed = transformSseLine(buffer, onError);
         controller.enqueue(transformed);
       }
     },
@@ -111,14 +125,45 @@ function resolveModelName(rawModel: string): string {
   return MODEL_FALLBACKS[rawModel] ?? rawModel;
 }
 
-export function prepareAntigravityRequest(
+export async function prepareAntigravityRequest(
   input: RequestInfo,
   init: RequestInit | undefined,
   accessToken: string,
   projectId: string,
-): { request: RequestInfo; init: RequestInit; streaming: boolean; requestedModel?: string } {
-  const baseInit: RequestInit = { ...init };
-  const headers = new Headers(init?.headers ?? {});
+): Promise<{ request: RequestInfo; init: RequestInit; streaming: boolean; requestedModel?: string }> {
+  let urlString = "";
+  let requestInit: RequestInit = { ...init };
+  let originalBody: BodyInit | null = init?.body ?? null;
+
+  if (typeof input === "string") {
+    urlString = input;
+  } else {
+    urlString = input.url;
+    // Merge headers from Request object
+    const reqHeaders = new Headers(input.headers);
+    if (init?.headers) {
+      new Headers(init.headers).forEach((value, key) => reqHeaders.set(key, value));
+    }
+    requestInit.headers = reqHeaders;
+    
+    // If body isn't in init, try to get it from request
+    if (!originalBody && input.body) {
+      // We need to clone to avoid consuming the original request if possible, 
+      // but standard Request cloning is sync. 
+      // We'll try to read text if we can.
+      try {
+         // Note: If input is a Request object that has been used, this might fail.
+         // But usually in this context it's fresh.
+         const cloned = input.clone();
+         originalBody = await cloned.text();
+      } catch (e) {
+        // If clone fails (e.g. body used), we might be in trouble or it's empty.
+      }
+    }
+  }
+
+  const baseInit: RequestInit = { ...requestInit, body: originalBody };
+  const headers = new Headers(baseInit.headers ?? {});
 
   if (!isGenerativeLanguageRequest(input)) {
     return {
@@ -131,7 +176,7 @@ export function prepareAntigravityRequest(
   headers.set("Authorization", `Bearer ${accessToken}`);
   headers.delete("x-api-key");
 
-  const match = input.match(/\/models\/([^:]+):(\w+)/);
+  const match = urlString.match(/\/models\/([^:]+):(\w+)/);
   if (!match) {
     return {
       request: input,
@@ -236,14 +281,35 @@ export async function transformAntigravityResponse(
     return response;
   }
 
-  if (streaming && response.ok && isEventStreamResponse && response.body) {
+    const errorHandler = (body: GeminiApiBody): GeminiApiBody | null => {
+        const previewErrorFixed = rewriteGeminiPreviewAccessError(body, response.status, requestedModel);
+        const rateLimitErrorFixed = rewriteGeminiRateLimitError(body);
+        
+        const patched = previewErrorFixed ?? rateLimitErrorFixed;
+        
+        if (previewErrorFixed?.error) {
+             client.tui.showToast({
+                body: { message: previewErrorFixed.error.message ?? "You need access to gemini 3", title: "Gemini 3 Access Required", variant: "error" }
+            }).catch(console.error);
+        }
+
+        if (rateLimitErrorFixed?.error) {
+            client.tui.showToast({
+                body: { message: rateLimitErrorFixed.error.message ?? "You are rate limited", title: "Antigravity Rate Limited", variant: "error" }
+            }).catch(console.error);
+        }
+
+        return patched;
+    };
+
+    if (streaming && response.ok && isEventStreamResponse && response.body) {
     logAntigravityDebugResponse(debugContext, response, {
       note: "Streaming SSE (passthrough mode)",
     });
 
     const transformedBody = response.body
       .pipeThrough(new TextDecoderStream())
-      .pipeThrough(createSseTransformStream())
+      .pipeThrough(createSseTransformStream(errorHandler))
       .pipeThrough(new TextEncoderStream());
 
     return new Response(transformedBody, {
@@ -266,7 +332,7 @@ export async function transformAntigravityResponse(
     };
 
     const usageFromSse = streaming && isEventStreamResponse ? extractUsageFromSsePayload(text) : null;
-    const parsed: GeminiApiBody | null = !streaming || !isEventStreamResponse ? parseGeminiApiBody(text) : null;
+    const parsed: GeminiApiBody | null = parseGeminiApiBody(text);
 
     // Apply error rewrites
     const previewErrorFixed = parsed ? rewriteGeminiPreviewAccessError(parsed, response.status, requestedModel) : null;
@@ -308,7 +374,7 @@ export async function transformAntigravityResponse(
     }
 
     if (streaming && response.ok && isEventStreamResponse) {
-      return new Response(transformStreamingPayload(text), init);
+      return new Response(transformStreamingPayload(text, errorHandler), init);
     }
 
     if (!parsed) {

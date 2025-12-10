@@ -234,54 +234,14 @@ export function rewriteGeminiRateLimitError(
     return null;
   }
 
-  const details = (error.details as ErrorDetail[]) ?? [];
-  const quotaInfo = details.find(d => d.reason === "QUOTA_EXHAUSTED");
-  
-  const rawDelay = quotaInfo?.metadata?.quotaResetDelay;
-  if (typeof rawDelay !== "string" || !rawDelay) {
-    return null;
-  }
-  const resetDelay = rawDelay as string;
-
-  let friendlyDuration = "";
-
-  // Try parsing complex duration first (e.g. 3h11m29s)
-  if (resetDelay.includes('h') || resetDelay.includes('m')) {
-    friendlyDuration = (resetDelay.split('.')[0] ?? "")
-      .replace('h', ' hours ')
-      .replace('m', ' minutes ')
-      .replace('s', ' seconds');
-  } else {
-    // Fallback to simpler seconds parsing
-    const secondsMatch = resetDelay.match(/^([\d.]+)s$/);
-    if (secondsMatch && secondsMatch[1]) {
-      const seconds = parseFloat(secondsMatch[1]);
-      if (!isNaN(seconds)) {
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const remainingSeconds = Math.floor(seconds % 60);
-        
-        const parts = [];
-        if (hours > 0) parts.push(`${hours} hours`);
-        if (minutes > 0) parts.push(`${minutes} minutes`);
-        if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds} seconds`);
-        
-        friendlyDuration = parts.join(" ");
-      }
-    }
-  }
-
-  if (!friendlyDuration) {
-    return null;
-  }
-
-  const enhancedMessage = `You have exhausted your capacity on this model. Your quota will reset in approximately ${friendlyDuration}.`;
+  // Use the message from the body if available, otherwise fallback
+  const message = error.message ?? "You have exhausted your capacity on this model. Please try again later.";
 
   return {
     ...body,
     error: {
       ...error,
-      message: enhancedMessage,
+      message,
     },
   };
 }
@@ -292,4 +252,15 @@ function isGeminiThreeModel(target?: string): boolean {
   }
 
   return /gemini[\s-]?3/i.test(target);
+}
+
+export function toUrlString(value: RequestInfo): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  const candidate = (value as Request).url;
+  if (candidate) {
+    return candidate;
+  }
+  return value.toString();
 }

@@ -10,7 +10,7 @@ import {
   prepareAntigravityRequest,
   transformAntigravityResponse,
 } from "./plugin/request";
-import { getSessionId } from "./plugin/request-helpers";
+import { getSessionId, toUrlString } from "./plugin/request-helpers";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { refreshAccessToken } from "./plugin/token";
 import type {
@@ -92,7 +92,7 @@ export const AntigravityOAuthPlugin = async (
             init: transformedInit,
             streaming,
             requestedModel,
-          } = prepareAntigravityRequest(
+          } = await prepareAntigravityRequest(
             input,
             init,
             accessToken,
@@ -243,13 +243,3 @@ export const AntigravityOAuthPlugin = async (
   },
 });
 
-function toUrlString(value: RequestInfo): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  const candidate = (value as Request).url;
-  if (candidate) {
-    return candidate;
-  }
-  return value.toString();
-}
