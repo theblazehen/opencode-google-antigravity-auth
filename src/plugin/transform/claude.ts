@@ -124,12 +124,32 @@ export function transformClaudeRequest(
   if (Array.isArray(contents)) {
     let funcCallCounter = 0;
     const funcCallIdMap = new Map<string, string>();
+    let thinkingBlocksRemoved = 0;
     
     for (const content of contents) {
       const parts = content.parts as Array<Record<string, unknown>> | undefined;
       if (!Array.isArray(parts)) continue;
       
+      const filteredParts: Array<Record<string, unknown>> = [];
+      
       for (const part of parts) {
+        if (part.thought === true) {
+          const signature = part.thoughtSignature;
+          if (typeof signature === "string" && signature.length > 50) {
+            if (process.env.OPENCODE_ANTIGRAVITY_DEBUG === "1") {
+              console.log(`${DEBUG_PREFIX} Keeping thought part with valid signature`);
+            }
+          } else {
+            thinkingBlocksRemoved++;
+            if (process.env.OPENCODE_ANTIGRAVITY_DEBUG === "1") {
+              console.log(`${DEBUG_PREFIX} Stripped thought part without valid signature`);
+            }
+            continue;
+          }
+        }
+
+
+        
         const functionCall = part.functionCall as Record<string, unknown> | undefined;
         if (functionCall && typeof functionCall.name === "string") {
           if (!functionCall.id) {
@@ -150,9 +170,18 @@ export function transformClaudeRequest(
             functionResponse.id = funcCallIdMap.get(functionResponse.name as string);
           }
         }
+        
+        filteredParts.push(part);
       }
+      
+      content.parts = filteredParts;
+    }
+    
+    if (thinkingBlocksRemoved > 0 && process.env.OPENCODE_ANTIGRAVITY_DEBUG === "1") {
+      console.log(`${DEBUG_PREFIX} Stripped ${thinkingBlocksRemoved} thought parts from conversation history`);
     }
   }
+
 
   requestPayload.sessionId = context.sessionId;
 
