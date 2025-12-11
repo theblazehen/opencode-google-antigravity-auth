@@ -1,6 +1,7 @@
 import { CODE_ASSIST_ENDPOINT, CODE_ASSIST_HEADERS } from "../constants";
 import { cacheSignature } from "./cache";
-import { debugLog, logAntigravityDebugResponse, type AntigravityDebugContext } from "./debug";
+import { logAntigravityDebugResponse, type AntigravityDebugContext } from "./debug";
+import { createLogger } from "./logger";
 import {
   extractUsageFromSsePayload,
   extractUsageMetadata,
@@ -17,6 +18,8 @@ import {
   type TransformContext,
 } from "./transform";
 import type { PluginClient } from "./types";
+
+const log = createLogger("request");
 
 const STREAM_ACTION = "streamGenerateContent";
 
@@ -90,13 +93,13 @@ function transformSseLine(line: string, onError?: (body: GeminiApiBody) => Gemin
     if (body.response !== undefined) {
       const responseStr = JSON.stringify(body.response);
       if (responseStr.includes('"thought"') || responseStr.includes('"thinking"')) {
-        debugLog("[SSE Transform] Found thinking content in response:", responseStr.slice(0, 500));
+        log.debug("Found thinking content in response", { preview: responseStr.slice(0, 500) });
       }
       const responseObj = body.response as Record<string, unknown>;
       if (responseObj.usageMetadata) {
         const usage = responseObj.usageMetadata as Record<string, unknown>;
         if (typeof usage.cachedContentTokenCount === "number" && usage.cachedContentTokenCount > 0) {
-          debugLog(`[Antigravity Cache] SSE Cache HIT - ${usage.cachedContentTokenCount} tokens from cache`);
+          log.debug("SSE Cache HIT", { cachedTokens: usage.cachedContentTokenCount });
         }
       }
       return `data: ${JSON.stringify(body.response)}`;
@@ -122,6 +125,9 @@ export function createSseTransformStream(onError?: (body: GeminiApiBody) => Gemi
           if (!response?.candidates) return;
           
           response.candidates.forEach((candidate: any, index: number) => {
+            if (candidate.groundingMetadata) {
+              log.debug("SSE Grounding metadata found", { groundingMetadata: candidate.groundingMetadata });
+            }
             if (candidate.content?.parts) {
               candidate.content.parts.forEach((part: any) => {
                 if (part.thought) {
@@ -133,7 +139,7 @@ export function createSseTransformStream(onError?: (body: GeminiApiBody) => Gemi
                     const fullText = thoughtBuffers.get(index) ?? "";
                     if (fullText) {
                       cacheSignature(sessionId, fullText, part.thoughtSignature);
-                      debugLog(`[SSE Transform] Cached signature for session ${sessionId} (text len=${fullText.length})`);
+                      log.debug("Cached signature", { sessionId, textLen: fullText.length });
                     }
                   }
                 }
@@ -252,10 +258,7 @@ export async function prepareAntigravityRequest(
             transformDebugInfo = result.debugInfo;
 
             if (transformDebugInfo) {
-                debugLog(`[Antigravity Transform] Using ${transformDebugInfo.transformer} transformer for model: ${effectiveModel} (wrapped input)`);
-                if (transformDebugInfo.toolCount !== undefined) {
-                    debugLog(`[Antigravity Transform] Tool count: ${transformDebugInfo.toolCount}`);
-                }
+                log.debug("Using transformer (wrapped)", { transformer: transformDebugInfo.transformer, model: effectiveModel, toolCount: transformDebugInfo.toolCount });
             }
         } else {
             const wrappedBody = {
@@ -286,10 +289,7 @@ export async function prepareAntigravityRequest(
         transformDebugInfo = result.debugInfo;
 
         if (transformDebugInfo) {
-          debugLog(`[Antigravity Transform] Using ${transformDebugInfo.transformer} transformer for model: ${effectiveModel}`);
-          if (transformDebugInfo.toolCount !== undefined) {
-            debugLog(`[Antigravity Transform] Tool count: ${transformDebugInfo.toolCount}`);
-          }
+          log.debug("Using transformer", { transformer: transformDebugInfo.transformer, model: effectiveModel, toolCount: transformDebugInfo.toolCount });
         }
       }
     } catch (error) {
@@ -397,6 +397,9 @@ export async function transformAntigravityResponse(
       const responseBody = parsed.response as any;
       if (responseBody?.candidates) {
          responseBody.candidates.forEach((candidate: any) => {
+             if (candidate.groundingMetadata) {
+               log.debug("Grounding metadata found", { groundingMetadata: candidate.groundingMetadata });
+             }
              let fullText = "";
              let signature = "";
              if (candidate.content?.parts) {
@@ -409,7 +412,7 @@ export async function transformAntigravityResponse(
              }
              if (fullText && signature) {
                  cacheSignature(sessionId, fullText, signature);
-                 debugLog(`[Antigravity Transform] Cached signature for session ${sessionId} (len=${fullText.length})`);
+                 log.debug("Cached signature", { sessionId, textLen: fullText.length });
              }
          });
       }
@@ -424,7 +427,7 @@ export async function transformAntigravityResponse(
 
     const usage = usageFromSse ?? (effectiveBody ? extractUsageMetadata(effectiveBody) : null);
     if (usage) {
-      debugLog("[Antigravity Cache] Usage metadata:", {
+      log.debug("Usage metadata", {
         cachedContentTokenCount: usage.cachedContentTokenCount,
         promptTokenCount: usage.promptTokenCount,
         candidatesTokenCount: usage.candidatesTokenCount,
@@ -433,7 +436,7 @@ export async function transformAntigravityResponse(
       });
     }
     if (usage?.cachedContentTokenCount !== undefined) {
-      debugLog(`[Antigravity Cache] Cache HIT - ${usage.cachedContentTokenCount} tokens served from cache`);
+      log.debug("Cache HIT", { cachedTokens: usage.cachedContentTokenCount });
       headers.set("x-gemini-cached-content-token-count", String(usage.cachedContentTokenCount));
       if (usage.totalTokenCount !== undefined) {
         headers.set("x-gemini-total-token-count", String(usage.totalTokenCount));
