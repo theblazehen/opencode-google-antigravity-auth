@@ -4,6 +4,7 @@ import {
   SEARCH_MODEL,
   SEARCH_THINKING_BUDGET_DEEP,
   SEARCH_THINKING_BUDGET_FAST,
+  SEARCH_TIMEOUT_MS,
 } from "../constants";
 import { createLogger } from "./logger";
 import { generateRequestId, getSessionId } from "./request-helpers";
@@ -263,22 +264,25 @@ export async function executeSearch(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(wrappedBody),
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       log.debug("Search API error", { status: response.status, error: errorText });
-      return `## Search Error\n\nFailed to execute search: ${response.status} ${response.statusText}\n\n${errorText}`;
+      return `## Search Error\n\nFailed to execute search: ${response.status} ${response.statusText}\n\n${errorText}\n\nPlease try again with a different query.`;
     }
 
     const data = (await response.json()) as AntigravitySearchResponse;
     log.debug("Search response received", { hasResponse: !!data.response });
 
     const result = parseSearchResponse(data);
-    return formatSearchResult(result);
+    const formated = formatSearchResult(result);
+    log.debug("Search response formatted", { result: formated });
+    return formated;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log.debug("Search execution error", { error: message });
-    return `## Search Error\n\nFailed to execute search: ${message}`;
+    return `## Search Error\n\nFailed to execute search: ${message}. Please try again with a different query.`;
   }
 }
