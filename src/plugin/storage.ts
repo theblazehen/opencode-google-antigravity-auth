@@ -63,7 +63,16 @@ export async function loadAccounts(): Promise<AccountStorage | null> {
       log.warn("Invalid storage format, ignoring");
       return null;
     }
-    
+
+    // Validate activeIndex bounds (corrupt file safety)
+    if (typeof data.activeIndex !== "number" || !Number.isInteger(data.activeIndex)) {
+      data.activeIndex = 0;
+    }
+
+    if (data.activeIndex < 0 || data.activeIndex >= data.accounts.length) {
+      data.activeIndex = 0;
+    }
+
     return data;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {

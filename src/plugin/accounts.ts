@@ -30,6 +30,16 @@ export class AccountManager {
   constructor(auth: OAuthAuthDetails, storedAccounts?: AccountStorage | null) {
     // Try loading from custom storage first
     if (storedAccounts && storedAccounts.accounts.length > 0) {
+      const activeIndex =
+        typeof storedAccounts.activeIndex === "number" &&
+        storedAccounts.activeIndex >= 0 &&
+        storedAccounts.activeIndex < storedAccounts.accounts.length
+          ? storedAccounts.activeIndex
+          : 0;
+
+      this.currentAccountIndex = activeIndex;
+      this.currentIndex = activeIndex;
+
       // Load from custom storage (preferred - includes emails)
       this.accounts = storedAccounts.accounts.map((acc, index) => ({
         index,
@@ -38,18 +48,20 @@ export class AccountManager {
           projectId: acc.projectId,
           managedProjectId: acc.managedProjectId,
         },
-        access: index === 0 ? auth.access : undefined,
-        expires: index === 0 ? auth.expires : undefined,
+        access: index === activeIndex ? auth.access : undefined,
+        expires: index === activeIndex ? auth.expires : undefined,
         isRateLimited: acc.isRateLimited || false,
         rateLimitResetTime: acc.rateLimitResetTime || 0,
         lastUsed: acc.lastUsed,
         email: acc.email,
         lastSwitchReason: acc.lastSwitchReason,
       }));
-      this.currentIndex = storedAccounts.activeIndex || 0;
     } else {
       // Fall back to parsing from auth.refresh (multi-account format)
       const multiAccount = parseMultiAccountRefresh(auth.refresh);
+
+      this.currentAccountIndex = 0;
+      this.currentIndex = 0;
 
       if (multiAccount.accounts.length > 0) {
         this.accounts = multiAccount.accounts.map((parts, index) => ({
@@ -213,7 +225,7 @@ export class AccountManager {
 
     return {
       type: "oauth",
-      refresh: formatRefreshParts(current.parts),
+      refresh: formatMultiAccountRefresh({ accounts: this.accounts.map((acc) => acc.parts) }),
       access: current.access || "",
       expires: current.expires || 0,
     };
@@ -263,8 +275,8 @@ export class AccountManager {
     return {
       type: "oauth",
       refresh: formatRefreshParts(account.parts),
-      access: account.access,
-      expires: account.expires,
+      access: account.access ?? "",
+      expires: account.expires ?? 0,
     };
   }
 

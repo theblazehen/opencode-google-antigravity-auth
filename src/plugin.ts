@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { tool } from "@opencode-ai/plugin";
 import type { AntigravityTokenExchangeResult } from "./antigravity/oauth";
 import { authorizeAntigravity, exchangeAntigravity } from "./antigravity/oauth";
@@ -44,13 +44,34 @@ async function getAuthContext(
     return null;
   }
 
-  let authRecord = auth;
+  const storedAccounts = await loadAccounts();
+  const accountManager = new AccountManager(auth, storedAccounts);
+  const account = accountManager.getCurrentOrNext();
+  if (!account) {
+    return null;
+  }
+
+  let authRecord = accountManager.accountToAuth(account);
+
   if (accessTokenExpired(authRecord)) {
     const refreshed = await refreshAccessToken(authRecord, client);
     if (!refreshed) {
       return null;
     }
+
     authRecord = refreshed;
+    const parts = parseRefreshParts(refreshed.refresh);
+    accountManager.updateAccount(account, refreshed.access!, refreshed.expires!, parts);
+
+    try {
+      await client.auth.set({
+        path: { id: ANTIGRAVITY_PROVIDER_ID },
+        body: accountManager.toAuthDetails(),
+      });
+      await accountManager.save();
+    } catch {
+      // Ignore persistence errors for tool requests.
+    }
   }
 
   const accessToken = authRecord.access;
@@ -64,6 +85,68 @@ async function getAuthContext(
   } catch {
     return null;
   }
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Aborted"));
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      cleanup();
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("Aborted"));
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function sleepWithBackoff(totalMs: number, signal?: AbortSignal | null): Promise<void> {
+  const stepsMs = [3000, 5000, 10000, 20000, 30000];
+  let remainingMs = Math.max(0, totalMs);
+  let stepIndex = 0;
+
+  while (remainingMs > 0) {
+    const stepMs = stepsMs[stepIndex] ?? stepsMs[stepsMs.length - 1] ?? 30000;
+    const waitMs = Math.min(remainingMs, stepMs);
+    await sleep(waitMs, signal);
+    remainingMs -= waitMs;
+    stepIndex++;
+  }
+}
+
+function overrideEndpointForRequest(request: RequestInfo, endpoint: string): RequestInfo {
+  const replaceBase = (url: string) => url.replace(/^https:\/\/[^\/]+/, endpoint);
+
+  if (typeof request === "string") {
+    return replaceBase(request);
+  }
+
+  if (request instanceof URL) {
+    return replaceBase(request.toString());
+  }
+
+  if (request instanceof Request) {
+    const newUrl = replaceBase(request.url);
+    if (newUrl === request.url) {
+      return request;
+    }
+    return new Request(newUrl, request);
+  }
+
+  return request;
 }
 
 function createGoogleSearchTool(getAuth: GetAuth, client: PluginContext["client"]) {
@@ -123,14 +206,21 @@ async function authenticateSingleAccount(
   // Try to open the browser automatically
   if (!isHeadless) {
     try {
-      if (process.platform === "darwin") {
-        exec(`open "${authorization.url}"`);
-      } else if (process.platform === "win32") {
-        exec(`start "${authorization.url}"`);
-      } else {
-        exec(`xdg-open "${authorization.url}"`);
-      }
-    } catch (e) {
+      await new Promise<void>((resolve, reject) => {
+        if (process.platform === "darwin") {
+          execFile("open", [authorization.url], (error) => (error ? reject(error) : resolve()));
+          return;
+        }
+
+        if (process.platform === "win32") {
+          // "start" needs a title argument; pass "".
+          execFile("cmd", ["/c", "start", "", authorization.url], (error) => (error ? reject(error) : resolve()));
+          return;
+        }
+
+        execFile("xdg-open", [authorization.url], (error) => (error ? reject(error) : resolve()));
+      });
+    } catch {
       await client.tui.showToast({
         body: {
           message: "Could not open browser automatically. Please copy/paste the URL.",
@@ -290,36 +380,40 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
               }
             };
 
-            // Try each account until one succeeds or all are rate-limited
-            const maxAccountAttempts = accountCount;
-            let accountAttempts = 0;
+            // Keep trying until one account succeeds; rate limits wait+retry.
+            const abortSignal = init?.signal;
 
-            while (accountAttempts < maxAccountAttempts) {
+            while (true) {
+              const previousAccount = accountManager.getCurrentAccount();
               const account = accountManager.getCurrentOrNext();
 
               if (!account) {
-                // All accounts are rate-limited
-                const waitTimeMs = accountManager.getMinWaitTime();
+                const waitTimeMs = accountManager.getMinWaitTime() || 60000;
                 const waitTimeSec = Math.ceil(waitTimeMs / 1000);
 
-                log.error(`All ${accountCount} account(s) are rate-limited`, {
+                log.info(`All ${accountCount} account(s) are rate-limited, waiting...`, {
                   accountCount,
                   waitTimeSec,
                 });
 
-                throw new Error(
-                  `All ${accountCount} account(s) are rate-limited. ` +
-                    `Please wait ${waitTimeSec}s or add more accounts via 'opencode auth login'.`
-                );
+                try {
+                  await client.tui.showToast({
+                    body: {
+                      message: `Antigravity Rate Limited. Retrying after ${waitTimeSec}s...`,
+                      variant: "warning",
+                    },
+                  });
+                } catch {}
+
+                await sleepWithBackoff(waitTimeMs, abortSignal);
+                continue;
               }
 
               // Check if this is a new account switch
-              const currentAccount = accountManager.getCurrentAccount();
-              const isSwitch = !currentAccount || currentAccount.index !== account.index;
+              const isSwitch = !previousAccount || previousAccount.index !== account.index;
 
               if (isSwitch) {
-                // Determine the reason for the switch
-                const switchReason = currentAccount?.isRateLimited ? "rate-limit" : "initial";
+                const switchReason = previousAccount ? (previousAccount.isRateLimited ? "rate-limit" : "rotation") : "initial";
                 accountManager.markSwitched(account, switchReason);
 
                 log.info(
@@ -349,7 +443,6 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
               if (accessTokenExpired(authRecord)) {
                 const refreshed = await refreshAccessToken(authRecord, client);
                 if (!refreshed) {
-                  accountAttempts++;
                   continue;
                 }
                 authRecord = refreshed;
@@ -368,7 +461,6 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
 
               const accessToken = authRecord.access;
               if (!accessToken) {
-                accountAttempts++;
                 continue;
               }
 
@@ -378,9 +470,24 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
               let lastError: Error | null = null;
               let lastResponse: Response | null = null;
               let hitRateLimit = false;
+              let retryAfterMsFromRateLimit = 0;
+              let retrySameAccountSoon = false;
+              let lastAttemptInfo:
+                | {
+                    resolvedUrl: string;
+                    method?: string;
+                    headers?: HeadersInit;
+                    body?: BodyInit | null;
+                    streaming: boolean;
+                    requestedModel?: string;
+                  }
+                | null = null;
 
               for (let i = 0; i < CODE_ASSIST_ENDPOINT_FALLBACKS.length; i++) {
                 const currentEndpoint = CODE_ASSIST_ENDPOINT_FALLBACKS[i];
+                if (!currentEndpoint) {
+                  continue;
+                }
 
                 try {
                   const { request, init: transformedInit, streaming, requestedModel } = await prepareAntigravityRequest(
@@ -391,12 +498,19 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
                   );
 
                   // Override endpoint for fallback
-                  const finalUrl = typeof request === "string" 
-                    ? request.replace(/^https:\/\/[^\/]+/, currentEndpoint)
-                    : request;
+                  const finalUrl = overrideEndpointForRequest(request, currentEndpoint);
 
                   const originalUrl = toUrlString(input);
                   const resolvedUrl = toUrlString(finalUrl);
+                  lastAttemptInfo = {
+                    resolvedUrl,
+                    method: transformedInit.method,
+                    headers: transformedInit.headers,
+                    body: transformedInit.body,
+                    streaming,
+                    requestedModel,
+                  };
+
                   const debugContext = startAntigravityDebugRequest({
                     originalUrl,
                     resolvedUrl,
@@ -410,91 +524,165 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
 
                   const response = await fetch(finalUrl, transformedInit);
 
-                  // Handle rate limiting - mark account and try next one
-                  if (response.status === 429) {
-                    const retryAfterHeader = response.headers.get("retry-after-ms") || response.headers.get("retry-after");
-                    let retryAfterMs = 60000; // Default 60s
+                   // Handle rate limiting
+                   if (response.status === 429) {
+                     const retryAfterMsHeader = response.headers.get("retry-after-ms");
+                     const retryAfterSecondsHeader = response.headers.get("retry-after");
+                     let retryAfterMs = 60000; // Default 60s
 
-                    if (retryAfterHeader) {
-                      const parsed = parseInt(retryAfterHeader, 10);
-                      if (!isNaN(parsed)) {
-                        // If header is in seconds (typical for Retry-After), convert to ms
-                        retryAfterMs =
-                          retryAfterHeader === response.headers.get("retry-after") ? parsed * 1000 : parsed;
-                      }
-                    }
+                     if (retryAfterMsHeader) {
+                       const parsed = parseInt(retryAfterMsHeader, 10);
+                       if (!Number.isNaN(parsed)) {
+                         retryAfterMs = parsed;
+                       }
+                     } else if (retryAfterSecondsHeader) {
+                       const parsed = parseInt(retryAfterSecondsHeader, 10);
+                       if (!Number.isNaN(parsed)) {
+                         retryAfterMs = parsed * 1000;
+                       }
+                     }
 
-                    accountManager.markRateLimited(account, retryAfterMs);
-                    hitRateLimit = true;
+                     // Single-account base case: surface the rich "capacity resets after ..." toast
+                     // from main branch by parsing the response body before we retry.
+                     if (accountCount === 1) {
+                       try {
+                         await transformAntigravityResponse(
+                           response,
+                           streaming,
+                           client,
+                           debugContext,
+                           requestedModel,
+                           getSessionId(),
+                         );
+                       } catch {
+                         // Ignore body parse/transform issues; we still back off.
+                       }
 
-                    log.info(`Account ${account.index + 1}/${accountCount} rate-limited${accountCount > 1 ? ', switching...' : ''}`, {
-                      fromAccountIndex: account.index,
-                      fromAccountEmail: account.email,
-                      accountCount,
-                      retryAfterMs,
-                      reason: "rate-limit",
-                    });
+                       accountManager.markRateLimited(account, retryAfterMs);
+                       hitRateLimit = true;
+                       retryAfterMsFromRateLimit = retryAfterMs;
 
-                    await client.tui.showToast({
-                      body: {
-                        message: accountCount > 1
-                          ? `Rate limited on ${account.email || `Account ${account.index + 1}`}. Switching...`
-                          : `Rate limited on ${account.email || 'your account'}. Retry after ${Math.ceil(retryAfterMs / 1000)}s`,
-                        variant: "warning",
-                      },
-                    });
+                       log.info(`Account ${account.index + 1}/${accountCount} rate-limited`, {
+                         fromAccountIndex: account.index,
+                         fromAccountEmail: account.email,
+                         accountCount,
+                         retryAfterMs,
+                         reason: "rate-limit",
+                       });
 
-                    // Save rate limit state
-                    try {
-                      await accountManager.save();
-                    } catch (error) {
-                      log.warn("Failed to save rate limit state", {
-                        error: error instanceof Error ? error.message : String(error),
-                      });
-                    }
+                       try {
+                         await accountManager.save();
+                       } catch (error) {
+                         log.warn("Failed to save rate limit state", {
+                           error: error instanceof Error ? error.message : String(error),
+                         });
+                       }
 
-                    // Break out of endpoint loop to try next account
-                    break;
-                  }
+                       break;
+                     }
 
-                  // Handle server errors (500) on the last endpoint - treat as rate limit
-                  if (response.status >= 500 && i === CODE_ASSIST_ENDPOINT_FALLBACKS.length - 1) {
-                    const retryAfterMs = 60000; // 60 seconds default
-                    accountManager.markRateLimited(account, retryAfterMs);
-                    hitRateLimit = true;
+                     // Multi-account: only switch when the backoff is meaningfully long.
+                     const switchThresholdMs = 5000;
 
-                    log.warn(
-                      `Account ${account.index + 1}/${accountCount} received ${response.status} error on all endpoints, rate-limiting...`,
-                      {
-                        fromAccountIndex: account.index,
-                        fromAccountEmail: account.email,
-                        accountCount,
-                        status: response.status,
-                        retryAfterMs,
-                        reason: "server-error",
-                      }
-                    );
+                     if (retryAfterMs <= switchThresholdMs) {
+                       log.info("Rate-limited briefly; retrying same account", {
+                         accountIndex: account.index,
+                         accountEmail: account.email,
+                         accountCount,
+                         retryAfterMs,
+                         switchThresholdMs,
+                       });
 
-                    await client.tui.showToast({
-                      body: {
-                        message: accountCount > 1
-                          ? `Server error on ${account.email || `Account ${account.index + 1}`}. Switching...`
-                          : `Server error (${response.status}). Retry after ${Math.ceil(retryAfterMs / 1000)}s`,
-                        variant: "warning",
-                      },
-                    });
+                       try {
+                         await client.tui.showToast({
+                           body: {
+                             message: `Rate limited briefly. Retrying in ${Math.ceil(retryAfterMs / 1000)}s...`,
+                             variant: "warning",
+                           },
+                         });
+                       } catch {}
 
-                    // Save rate limit state
-                    try {
-                      await accountManager.save();
-                    } catch (error) {
-                      log.warn("Failed to save rate limit state", {
-                        error: error instanceof Error ? error.message : String(error),
-                      });
-                    }
+                       await sleepWithBackoff(retryAfterMs, abortSignal);
+                       retrySameAccountSoon = true;
+                       break;
+                     }
 
-                    break;
-                  }
+                     accountManager.markRateLimited(account, retryAfterMs);
+                     hitRateLimit = true;
+                     retryAfterMsFromRateLimit = retryAfterMs;
+
+                     log.info(
+                       `Account ${account.index + 1}/${accountCount} rate-limited, switching...`,
+                       {
+                         fromAccountIndex: account.index,
+                         fromAccountEmail: account.email,
+                         accountCount,
+                         retryAfterMs,
+                         reason: "rate-limit",
+                       },
+                     );
+
+                     try {
+                       await client.tui.showToast({
+                         body: {
+                           message: `Rate limited on ${account.email || `Account ${account.index + 1}`}. Switching...`,
+                           variant: "warning",
+                         },
+                       });
+                     } catch {}
+
+                     try {
+                       await accountManager.save();
+                     } catch (error) {
+                       log.warn("Failed to save rate limit state", {
+                         error: error instanceof Error ? error.message : String(error),
+                       });
+                     }
+
+                     break;
+                   }
+
+
+                   // Handle server errors (5xx) on the last endpoint - treat as rate limit
+                   if (response.status >= 500 && i === CODE_ASSIST_ENDPOINT_FALLBACKS.length - 1) {
+                     const retryAfterMs = 60000; // Default 60s
+
+                     accountManager.markRateLimited(account, retryAfterMs);
+                     hitRateLimit = true;
+                     retryAfterMsFromRateLimit = retryAfterMs;
+
+                     log.warn(
+                       `Account ${account.index + 1}/${accountCount} received ${response.status} error on all endpoints, rate-limiting...`,
+                       {
+                         fromAccountIndex: account.index,
+                         fromAccountEmail: account.email,
+                         accountCount,
+                         status: response.status,
+                         retryAfterMs,
+                         reason: "server-error",
+                       },
+                     );
+
+                     if (accountCount > 1) {
+                       await client.tui.showToast({
+                         body: {
+                           message: `Server error on ${account.email || `Account ${account.index + 1}`}. Switching...`,
+                           variant: "warning",
+                         },
+                       });
+                     }
+
+                     try {
+                       await accountManager.save();
+                     } catch (error) {
+                       log.warn("Failed to save rate limit state", {
+                         error: error instanceof Error ? error.message : String(error),
+                       });
+                     }
+
+                     break;
+                   }
+
 
                   // Check if we should retry with next endpoint (but not for rate limits)
                   const shouldRetryEndpoint = response.status === 403 || response.status === 404 || response.status >= 500;
@@ -540,32 +728,56 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
                 }
               }
 
-              // If we hit a rate limit, try the next account
+              if (retrySameAccountSoon) {
+                continue;
+              }
+
+              // If we hit a rate limit, try the next account (or wait+retry for single-account)
               if (hitRateLimit) {
-                accountAttempts++;
+                if (accountCount === 1) {
+                  const waitMs = retryAfterMsFromRateLimit || accountManager.getMinWaitTime() || 60000;
+
+                  log.info("Single account rate-limited, retrying after backoff", {
+                    waitMs,
+                    waitSec: Math.ceil(waitMs / 1000),
+                  });
+
+                  await sleepWithBackoff(waitMs, abortSignal);
+                }
+
                 continue;
               }
 
               // If we get here, all endpoints failed for this account
               if (lastResponse) {
-                // Return the last response even if it was an error
-                const { streaming, requestedModel } = await prepareAntigravityRequest(
-                  input,
-                  init,
-                  accessToken,
-                  projectContext.effectiveProjectId,
-                );
-                const debugContext = startAntigravityDebugRequest({
-                  originalUrl: toUrlString(input),
+                const attempt = lastAttemptInfo ?? {
                   resolvedUrl: toUrlString(input),
                   method: init?.method,
                   headers: init?.headers,
                   body: init?.body,
-                  streaming,
+                  streaming: false,
+                  requestedModel: undefined,
+                };
+
+                const debugContext = startAntigravityDebugRequest({
+                  originalUrl: toUrlString(input),
+                  resolvedUrl: attempt.resolvedUrl,
+                  method: attempt.method,
+                  headers: attempt.headers,
+                  body: attempt.body,
+                  streaming: attempt.streaming,
                   projectId: projectContext.effectiveProjectId,
                   sessionId: getSessionId(),
                 });
-                return transformAntigravityResponse(lastResponse, streaming, client, debugContext, requestedModel, getSessionId());
+
+                return transformAntigravityResponse(
+                  lastResponse,
+                  attempt.streaming,
+                  client,
+                  debugContext,
+                  attempt.requestedModel,
+                  getSessionId(),
+                );
               }
 
               throw lastError || new Error("All Antigravity endpoints failed");
