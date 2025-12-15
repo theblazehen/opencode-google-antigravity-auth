@@ -301,6 +301,21 @@ export async function prepareAntigravityRequest(
     headers.set("Accept", "text/event-stream");
   }
 
+  // Add interleaved thinking header for Claude thinking models
+  if (effectiveModel.includes("claude") && effectiveModel.includes("thinking")) {
+    const existing = headers.get("anthropic-beta");
+    const interleavedHeader = "interleaved-thinking-2025-05-14";
+
+    if (existing) {
+      if (!existing.includes(interleavedHeader)) {
+        headers.set("anthropic-beta", `${existing},${interleavedHeader}`);
+      }
+    } else {
+      headers.set("anthropic-beta", interleavedHeader);
+    }
+    log.debug("Added interleaved thinking header");
+  }
+
   headers.set("User-Agent", CODE_ASSIST_HEADERS["User-Agent"]);
   headers.set("X-Goog-Api-Client", CODE_ASSIST_HEADERS["X-Goog-Api-Client"]);
   headers.set("Client-Metadata", CODE_ASSIST_HEADERS["Client-Metadata"]);
