@@ -178,6 +178,36 @@ Antigravity provides access to Claude models via `gemini-claude-*` model names. 
 - `gemini-claude-sonnet-4-5-thinking` - Claude Sonnet 4.5 with thinking
 - `gemini-claude-opus-4-5-thinking` - Claude Opus 4.5 with thinking
 
+### Interleaved Thinking Support
+
+When you use any Claude thinking model (models with `-thinking` suffix), the plugin automatically enables **interleaved thinking** by adding the `anthropic-beta: interleaved-thinking-2025-05-14` header to your requests.
+
+**What is Interleaved Thinking?**
+
+Without interleaved thinking, Claude thinks once at the beginning and then executes all tool calls. With interleaved thinking enabled, Claude can think *between* tool calls, allowing it to:
+
+- **Reason about tool results** before deciding what to do next
+- **Chain multiple tool calls** with reasoning steps in between
+- **Make more nuanced decisions** based on intermediate results
+- **Adapt its approach** as it learns more from each tool interaction
+
+**Why This Matters for Coding Agents**
+
+AI coding tools like Opencode heavily rely on tool use (reading files, searching code, running commands). Interleaved thinking significantly improves the quality of multi-step coding tasks because Claude can:
+
+1. Read a file → *think about what it found* → decide which file to read next
+2. Run a test → *analyze the failure* → make a targeted fix
+3. Search for a pattern → *reason about the results* → refine the search
+
+**Automatic Enablement**
+
+You don't need to configure anything - when you use any `-thinking` Claude model variant, the plugin automatically:
+- Detects the thinking model from the model name suffix
+- Injects the `anthropic-beta: interleaved-thinking-2025-05-14` header
+- Merges with any existing beta headers (e.g., for prompt caching)
+
+This is enabled by default because if you're opting into extended thinking, you almost certainly want the improved reasoning that interleaved thinking provides for tool-heavy workflows.
+
 ## Local Development
 
 ```bash
