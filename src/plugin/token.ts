@@ -6,6 +6,7 @@ import {
 import { formatRefreshParts, parseRefreshParts } from "./auth";
 import { storeCachedAuth } from "./cache";
 import { invalidateProjectContextCache } from "./project";
+import { printAntigravityConsole } from "./logger";
 import type { OAuthAuthDetails, PluginClient, RefreshParts } from "./types";
 
 interface OAuthErrorPayload {
@@ -95,11 +96,15 @@ export async function refreshAccessToken(
       const { code, description } = parseOAuthErrorPayload(errorText);
       const details = [code, description ?? errorText].filter(Boolean).join(": ");
       const baseMessage = `Antigravity token refresh failed (${response.status} ${response.statusText})`;
-      console.warn(`[Antigravity OAuth] ${details ? `${baseMessage} - ${details}` : baseMessage}`);
+      printAntigravityConsole(
+        "warn",
+        `[OAuth] ${details ? `${baseMessage} - ${details}` : baseMessage}`,
+      );
 
       if (code === "invalid_grant") {
-        console.warn(
-          "[Antigravity OAuth] Google revoked the stored refresh token. Run `opencode auth login` and reauthenticate the Google provider.",
+        printAntigravityConsole(
+          "warn",
+          "[OAuth] Google revoked the stored refresh token. Run `opencode auth login` and reauthenticate the Google provider.",
         );
         invalidateProjectContextCache(auth.refresh);
         try {
@@ -118,7 +123,7 @@ export async function refreshAccessToken(
             body: clearedAuth,
           });
         } catch (storeError) {
-          console.error("Failed to clear stored Antigravity OAuth credentials:", storeError);
+          printAntigravityConsole("error", "Failed to clear stored Antigravity OAuth credentials", storeError);
         }
       }
 
@@ -154,7 +159,11 @@ export async function refreshAccessToken(
 
     return updatedAuth;
   } catch (error) {
-    console.error("Failed to refresh Antigravity access token due to an unexpected error:", error);
+    printAntigravityConsole(
+      "error",
+      "Failed to refresh Antigravity access token due to an unexpected error",
+      error,
+    );
     return undefined;
   }
 }

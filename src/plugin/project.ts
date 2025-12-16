@@ -4,6 +4,7 @@ import {
   CODE_ASSIST_HEADERS,
 } from "../constants";
 import { formatRefreshParts, parseRefreshParts } from "./auth";
+import { printAntigravityConsole } from "./logger";
 import type {
   OAuthAuthDetails,
   PluginClient,
@@ -147,7 +148,7 @@ export async function loadManagedProject(
 
     return (await response.json()) as LoadCodeAssistPayload;
   } catch (error) {
-    console.error("Failed to load Antigravity managed project:", error);
+    printAntigravityConsole("error", "Failed to load Antigravity managed project", error);
     return null;
   }
 }
@@ -204,7 +205,7 @@ export async function onboardManagedProject(
         return projectId;
       }
     } catch (error) {
-      console.error("Failed to onboard Antigravity managed project:", error);
+      printAntigravityConsole("error", "Failed to onboard Antigravity managed project", error);
       return undefined;
     }
 

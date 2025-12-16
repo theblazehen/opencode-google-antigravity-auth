@@ -1,7 +1,7 @@
 import { CODE_ASSIST_ENDPOINT, CODE_ASSIST_HEADERS } from "../constants";
 import { cacheSignature, type ModelFamily } from "./cache";
 import { logAntigravityDebugResponse, type AntigravityDebugContext } from "./debug";
-import { createLogger } from "./logger";
+import { createLogger, printAntigravityConsole } from "./logger";
 import {
   extractUsageFromSsePayload,
   extractUsageMetadata,
@@ -306,7 +306,7 @@ export async function prepareAntigravityRequest(
         }
       }
     } catch (error) {
-      console.error("Failed to transform Antigravity request body:", error);
+      printAntigravityConsole("error", "Failed to transform Antigravity request body", error);
     }
   }
 
@@ -372,19 +372,13 @@ export async function transformAntigravityResponse(
     const errorHandler = (body: GeminiApiBody): GeminiApiBody | null => {
         const previewErrorFixed = rewriteGeminiPreviewAccessError(body, response.status, requestedModel);
         const rateLimitErrorFixed = rewriteGeminiRateLimitError(body);
-        
+
         const patched = previewErrorFixed ?? rateLimitErrorFixed;
-        
+
         if (previewErrorFixed?.error) {
              client.tui.showToast({
                 body: { message: previewErrorFixed.error.message ?? "You need access to gemini 3", title: "Gemini 3 Access Required", variant: "error" }
-            }).catch(console.error);
-        }
-
-        if (rateLimitErrorFixed?.error) {
-            client.tui.showToast({
-                body: { message: rateLimitErrorFixed.error.message ?? "You are rate limited", title: "Antigravity Rate Limited", variant: "error" }
-            }).catch(console.error);
+            }).catch(() => {});
         }
 
         return patched;
@@ -485,15 +479,15 @@ export async function transformAntigravityResponse(
     });
 
     if (previewErrorFixed?.error) {
-      await client.tui.showToast({
-        body: { message: previewErrorFixed.error.message ?? "You need access to gemini 3", title: "Gemini 3 Access Required", variant: "error" }
-      });
-    }
-
-    if (rateLimitErrorFixed?.error) {
-      await client.tui.showToast({
-        body: { message: rateLimitErrorFixed.error.message ?? "You are rate limited", title: "Antigravity Rate Limited", variant: "error" }
-      });
+      try {
+        await client.tui.showToast({
+          body: {
+            message: previewErrorFixed.error.message ?? "You need access to gemini 3",
+            title: "Gemini 3 Access Required",
+            variant: "error",
+          },
+        });
+      } catch {}
     }
 
     if (streaming && response.ok && isEventStreamResponse) {
@@ -518,7 +512,7 @@ export async function transformAntigravityResponse(
       error,
       note: "Failed to transform Antigravity response",
     });
-    console.error("Failed to transform Antigravity response:", error);
+    printAntigravityConsole("error", "Failed to transform Antigravity response", error);
     return response;
   }
 }
