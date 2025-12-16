@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { cacheSignature, getCachedSignature } from "../cache";
+import { cacheSignature, getCachedSignature, type ModelFamily } from "../cache";
 import { createLogger } from "../logger";
 import { normalizeThinkingConfig } from "../request-helpers";
 import type { RequestPayload, TransformContext, TransformResult } from "./types";
@@ -223,22 +223,21 @@ export function transformClaudeRequest(
           let signature = part.thoughtSignature;
 
           if (!signature || (typeof signature === "string" && signature.length < 50)) {
-            // Try cache
             if (typeof part.text === "string") {
-              const cached = getCachedSignature(context.sessionId, part.text);
+              const cached = getCachedSignature(context.family, context.sessionId, part.text);
               if (cached) {
                 signature = cached;
                 part.thoughtSignature = cached;
-                log.debug("Restored thought signature from cache");
+                log.debug("Restored thought signature from cache", { family: context.family });
               }
             }
           }
 
           if (typeof signature === "string" && signature.length > 50) {
             if (typeof part.text === "string" && context.sessionId) {
-              cacheSignature(context.sessionId, part.text, signature);
+              cacheSignature(context.family, context.sessionId, part.text, signature as string);
             }
-            log.debug("Keeping thought part with valid signature");
+            log.debug("Keeping thought part with valid signature", { family: context.family });
           } else {
             log.warn("Invalid/missing thought signature, removing block", { signatureLen: typeof signature === 'string' ? signature.length : 0 });
             thinkingBlocksRemoved++;

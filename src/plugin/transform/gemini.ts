@@ -1,4 +1,4 @@
-import { cacheSignature } from "../cache";
+import { cacheSignature, getCachedSignature, type ModelFamily } from "../cache";
 import { createLogger } from "../logger";
 import { normalizeThinkingConfig } from "../request-helpers";
 import type { RequestPayload, TransformContext, TransformResult } from "./types";
@@ -135,20 +135,41 @@ export function transformGeminiRequest(
       
       const parts = content.parts as Array<Record<string, unknown>> | undefined;
       if (Array.isArray(parts)) {
+        const filteredParts: Array<Record<string, unknown>> = [];
+        let thinkingBlocksRemoved = 0;
+        
         for (const part of parts) {
-          if (part.thought === true || part.thoughtSignature || part.functionCall) {
-            const existingSig = part.thoughtSignature as string | undefined;
+          if (part.thought === true) {
+            const thoughtText = part.text as string | undefined;
             
-            if (existingSig && existingSig !== THOUGHT_SIGNATURE_BYPASS && existingSig.length > 50) {
-              if (typeof part.text === "string" && context.sessionId) {
-                cacheSignature(context.sessionId, part.text, existingSig);
-                log.debug("Cached original signature before bypass", { textLen: part.text.length });
+            if (thoughtText && context.sessionId) {
+              const cachedSig = getCachedSignature(context.family, context.sessionId, thoughtText);
+              
+              if (cachedSig) {
+                part.thoughtSignature = cachedSig;
+                filteredParts.push(part);
+                log.debug("Restored thought from own cache", { family: context.family });
+                continue;
               }
             }
             
-            part.thoughtSignature = THOUGHT_SIGNATURE_BYPASS;
-            log.debug("Applied signature bypass");
+            thinkingBlocksRemoved++;
+            log.debug("Removed thinking block (not in own cache)", { family: context.family });
+            continue;
           }
+          
+          if (part.functionCall) {
+            part.thoughtSignature = THOUGHT_SIGNATURE_BYPASS;
+            log.debug("Applied signature bypass for functionCall");
+          }
+          
+          filteredParts.push(part);
+        }
+        
+        content.parts = filteredParts;
+        
+        if (thinkingBlocksRemoved > 0) {
+          log.debug("Removed foreign thinking blocks", { count: thinkingBlocksRemoved });
         }
       }
     }

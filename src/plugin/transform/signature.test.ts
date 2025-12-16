@@ -1,16 +1,19 @@
 import { describe, expect, it } from "bun:test";
 
+import { cacheSignature } from "../cache";
 import { transformClaudeRequest } from "./claude";
 import { transformGeminiRequest } from "./gemini";
-import type { RequestPayload, TransformContext } from "./types";
+import type { ModelFamily, RequestPayload, TransformContext } from "./types";
 
 const THOUGHT_SIGNATURE_BYPASS = "skip_thought_signature_validator";
 
 const VALID_CLAUDE_SIGNATURE = "RXJRQ0NrZ0lDaEFDR0FJcVFKdmIzVzdUKzcyNE9nS29LTVdocXpIOEVuZFB3VzltelFLZENYT2xTMWs5dXF3RUdNcTMzTEJuaW1keTdBUjhGSUVyVG1IMnk2SVQvYjJaMTFnL3pPRVNES2NoYmVWZzk1LzBMaE50dGhvTUJWUFVJRmxNZU5qSzJzNERJakJXdFhJeVg0ZUJBZ1p4Zk9hYkNBWER6SHRvb2ZtMVQ2SjZodWdwbXFzSHllR3RjeERLd2JicWJJUzRvQStzTm9jcW1RR0MyTUFKUmNBSXRMc3drSFNNK09DcWhPNWZlNWxtNERIN0pJdnluamFBcEVrMUtsZithWjBwZWgyb1ZrZlUyQmVwZVByc3k3UWJVcWFmc3dBSVl6QkNlY1BISTA4bmpneUlBT";
 
 function createContext(model: string): TransformContext {
+  const family: ModelFamily = model.includes("claude") ? "claude" : "gemini";
   return {
     model,
+    family,
     projectId: "test-project",
     streaming: true,
     requestId: "test-request-id",
@@ -20,7 +23,7 @@ function createContext(model: string): TransformContext {
 
 describe("thoughtSignature handling", () => {
   describe("gemini transformer", () => {
-    it("applies bypass to thinking blocks in model turns", () => {
+    it("removes thinking blocks from model turns for Gemini", () => {
       const payload: RequestPayload = {
         contents: [
           {
@@ -49,7 +52,9 @@ describe("thoughtSignature handling", () => {
       const modelParts = contents[1].parts;
       const thoughtPart = modelParts.find((p: any) => p.thought === true);
 
-      expect(thoughtPart.thoughtSignature).toBe(THOUGHT_SIGNATURE_BYPASS);
+      expect(thoughtPart).toBeUndefined();
+      expect(modelParts.length).toBe(1);
+      expect(modelParts[0].text).toBe("Here is my response");
     });
 
     it("applies bypass to functionCall parts", () => {
@@ -208,7 +213,7 @@ describe("thoughtSignature handling", () => {
   });
 
   describe("cross-model scenarios with cache", () => {
-    it("Claude→Gemini: caches signature and applies bypass", () => {
+    it("Claude→Gemini: caches signature and removes thinking blocks", () => {
       const thinkingText = "The user is asking a simple arithmetic question...";
       const payload: RequestPayload = {
         contents: [
@@ -242,11 +247,12 @@ describe("thoughtSignature handling", () => {
       const modelParts = contents[1].parts;
       const thoughtPart = modelParts.find((p: any) => p.thought === true);
 
-      expect(thoughtPart.thoughtSignature).toBe(THOUGHT_SIGNATURE_BYPASS);
-      expect(thoughtPart.thoughtSignature).not.toBe(VALID_CLAUDE_SIGNATURE);
+      expect(thoughtPart).toBeUndefined();
+      expect(modelParts.length).toBe(1);
+      expect(modelParts[0].text).toBe("2 + 2 = 4");
     });
 
-    it("Claude→Gemini→Claude: restores signature from cache", () => {
+    it("Claude→Gemini→Claude: family-independent cache prevents cross-contamination", () => {
       const thinkingText = "The user is asking a simple arithmetic question...";
       
       const claudePayload: RequestPayload = {
@@ -304,6 +310,69 @@ describe("thoughtSignature handling", () => {
       const modelParts = contents[1].parts;
       const thoughtPart = modelParts.find((p: any) => p.thought === true);
 
+      expect(thoughtPart).toBeUndefined();
+      expect(modelParts.length).toBe(1);
+      expect(modelParts[0].text).toBe("2 + 2 = 4");
+    });
+
+    it("Claude→Claude: restores signature from same-family cache", () => {
+      const thinkingText = "Same family thinking restoration test...";
+      
+      const firstClaudePayload: RequestPayload = {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: "What is 2+2?" }],
+          },
+          {
+            role: "model",
+            parts: [
+              {
+                text: thinkingText,
+                thought: true,
+                thoughtSignature: VALID_CLAUDE_SIGNATURE,
+              },
+              { text: "2 + 2 = 4" },
+            ],
+          },
+        ],
+      };
+
+      const claudeContext1 = createContext("claude-opus-4-5-thinking");
+      transformClaudeRequest(claudeContext1, firstClaudePayload);
+
+      const secondClaudePayload: RequestPayload = {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: "What is 2+2?" }],
+          },
+          {
+            role: "model",
+            parts: [
+              {
+                text: thinkingText,
+                thought: true,
+                thoughtSignature: "short-sig",
+              },
+              { text: "2 + 2 = 4" },
+            ],
+          },
+          {
+            role: "user",
+            parts: [{ text: "What about 3+3?" }],
+          },
+        ],
+      };
+
+      const claudeContext2 = createContext("claude-opus-4-5-thinking");
+      const result = transformClaudeRequest(claudeContext2, secondClaudePayload);
+      const parsed = JSON.parse(result.body);
+      const contents = parsed.request.contents;
+
+      const modelParts = contents[1].parts;
+      const thoughtPart = modelParts.find((p: any) => p.thought === true);
+
       expect(thoughtPart).toBeDefined();
       expect(thoughtPart.thoughtSignature).toBe(VALID_CLAUDE_SIGNATURE);
     });
@@ -346,6 +415,87 @@ describe("thoughtSignature handling", () => {
       expect(thoughtPart).toBeUndefined();
       expect(modelParts.length).toBe(1);
       expect(modelParts[0].text).toBe("2 + 2 = 4");
+    });
+
+    it("Gemini→Gemini: restores signature from same-family cache", () => {
+      const thinkingText = "Gemini thinking that should be restored...";
+      const VALID_GEMINI_SIGNATURE = "GeminiValidSignatureXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+      
+      cacheSignature("gemini", "test-session-id", thinkingText, VALID_GEMINI_SIGNATURE);
+
+      const geminiPayload: RequestPayload = {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: "What is 2+2?" }],
+          },
+          {
+            role: "model",
+            parts: [
+              {
+                text: thinkingText,
+                thought: true,
+                thoughtSignature: "short-sig",
+              },
+              { text: "2 + 2 = 4" },
+            ],
+          },
+          {
+            role: "user",
+            parts: [{ text: "What about 3+3?" }],
+          },
+        ],
+      };
+
+      const geminiContext = createContext("gemini-3-pro-high");
+      const result = transformGeminiRequest(geminiContext, geminiPayload);
+      const parsed = JSON.parse(result.body);
+      const contents = parsed.request.contents;
+
+      const modelParts = contents[1].parts;
+      const thoughtPart = modelParts.find((p: any) => p.thought === true);
+
+      expect(thoughtPart).toBeDefined();
+      expect(thoughtPart.thoughtSignature).toBe(VALID_GEMINI_SIGNATURE);
+    });
+
+    it("Gemini keeps own thinking when pre-cached (simulates response caching)", () => {
+      const thinkingText = "Gemini's own thinking...";
+      const VALID_GEMINI_SIGNATURE = "GeminiValidSignatureYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY";
+      
+      cacheSignature("gemini", "test-session-id", thinkingText, VALID_GEMINI_SIGNATURE);
+      
+      const payload: RequestPayload = {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: "What is 2+2?" }],
+          },
+          {
+            role: "model",
+            parts: [
+              {
+                text: thinkingText,
+                thought: true,
+                thoughtSignature: VALID_GEMINI_SIGNATURE,
+              },
+              { text: "2 + 2 = 4" },
+            ],
+          },
+        ],
+      };
+
+      const context = createContext("gemini-3-pro-high");
+      const result = transformGeminiRequest(context, payload);
+      const parsed = JSON.parse(result.body);
+      const contents = parsed.request.contents;
+
+      const modelParts = contents[1].parts;
+      const thoughtPart = modelParts.find((p: any) => p.thought === true);
+
+      expect(thoughtPart).toBeDefined();
+      expect(thoughtPart.thoughtSignature).toBe(VALID_GEMINI_SIGNATURE);
+      expect(modelParts.length).toBe(2);
     });
   });
 });

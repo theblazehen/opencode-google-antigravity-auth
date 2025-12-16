@@ -69,12 +69,19 @@ export function clearCachedAuth(refresh?: string): void {
 
 const signatureCache = new Map<string, string>();
 
+export type ModelFamily = "claude" | "gemini";
+
 /**
  * Generates a SHA-256 hash key for a thought block.
- * We hash (sessionId + ":" + thoughtText) to ensure uniqueness and constant key size.
+ * We hash (family + ":" + sessionId + ":" + thoughtText) to ensure uniqueness per model family.
  */
-function getSignatureKey(sessionId: string, thoughtText: string): string {
-  const input = `${sessionId}:${thoughtText}`;
+function normalizeThoughtText(text: string): string {
+  return text.trim();
+}
+
+function getSignatureKey(family: ModelFamily, sessionId: string, thoughtText: string): string {
+  const normalizedText = normalizeThoughtText(thoughtText);
+  const input = `${family}:${sessionId}:${normalizedText}`;
   return createHash("sha256").update(input).digest("hex");
 }
 
@@ -82,15 +89,12 @@ function getSignatureKey(sessionId: string, thoughtText: string): string {
  * Caches a thought signature for a given session and thought text.
  * Implements a simple LRU-like eviction policy (clears old entries when limit reached).
  */
-export function cacheSignature(sessionId: string, thoughtText: string, signature: string): void {
-  const key = getSignatureKey(sessionId, thoughtText);
+export function cacheSignature(family: ModelFamily, sessionId: string, thoughtText: string, signature: string): void {
+  const key = getSignatureKey(family, sessionId, thoughtText);
   signatureCache.set(key, signature);
 }
 
-/**
- * Retrieves a cached thought signature.
- */
-export function getCachedSignature(sessionId: string, thoughtText: string): string | undefined {
-  const key = getSignatureKey(sessionId, thoughtText);
+export function getCachedSignature(family: ModelFamily, sessionId: string, thoughtText: string): string | undefined {
+  const key = getSignatureKey(family, sessionId, thoughtText);
   return signatureCache.get(key);
 }

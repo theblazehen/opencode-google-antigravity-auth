@@ -1,8 +1,11 @@
+export type ModelFamily = "claude" | "gemini";
+
 /**
  * Context passed to request transformers containing model info and session metadata.
  */
 export interface TransformContext {
   model: string;
+  family: ModelFamily;
   projectId: string;
   streaming: boolean;
   requestId: string;

@@ -1,5 +1,5 @@
 import { CODE_ASSIST_ENDPOINT, CODE_ASSIST_HEADERS } from "../constants";
-import { cacheSignature } from "./cache";
+import { cacheSignature, type ModelFamily } from "./cache";
 import { logAntigravityDebugResponse, type AntigravityDebugContext } from "./debug";
 import { createLogger } from "./logger";
 import {
@@ -35,6 +35,10 @@ const MODEL_ALIASES: Record<string, string> = {
 const MODEL_FALLBACKS: Record<string, string> = {
   "gemini-2.5-flash-image": "gemini-2.5-flash",
 };
+
+function getModelFamily(model: string): ModelFamily {
+  return model.includes("claude") ? "claude" : "gemini";
+}
 
 export function isGenerativeLanguageRequest(input: RequestInfo): boolean {
   if (typeof input === "string") {
@@ -108,7 +112,7 @@ function transformSseLine(line: string, onError?: (body: GeminiApiBody) => Gemin
   return line;
 }
 
-export function createSseTransformStream(onError?: (body: GeminiApiBody) => GeminiApiBody | null, sessionId?: string): TransformStream<string, string> {
+export function createSseTransformStream(onError?: (body: GeminiApiBody) => GeminiApiBody | null, sessionId?: string, family?: ModelFamily): TransformStream<string, string> {
   let buffer = "";
   const thoughtBuffers = new Map<number, string>();
 
@@ -120,7 +124,7 @@ export function createSseTransformStream(onError?: (body: GeminiApiBody) => Gemi
 
       for (const line of lines) {
         const transformed = transformSseLine(line, onError, (body) => {
-          if (!sessionId) return;
+          if (!sessionId || !family) return;
           const response = body.response as any;
           if (!response?.candidates) return;
           
@@ -138,9 +142,16 @@ export function createSseTransformStream(onError?: (body: GeminiApiBody) => Gemi
                   if (part.thoughtSignature) {
                     const fullText = thoughtBuffers.get(index) ?? "";
                     if (fullText) {
-                      cacheSignature(sessionId, fullText, part.thoughtSignature);
-                      log.debug("Cached signature", { sessionId, textLen: fullText.length });
+                      cacheSignature(family, sessionId, fullText, part.thoughtSignature);
+                      log.debug("Cached signature from thought part", { family, textLen: fullText.length });
                     }
+                  }
+                }
+                if (part.thoughtSignature && !part.thought) {
+                  const fullText = thoughtBuffers.get(index) ?? "";
+                  if (fullText) {
+                    cacheSignature(family, sessionId, fullText, part.thoughtSignature);
+                    log.debug("Cached signature from separate part", { family, textLen: fullText.length });
                   }
                 }
               });
@@ -247,6 +258,7 @@ export async function prepareAntigravityRequest(
         if (isClaudeModel) {
             const context: TransformContext = {
                 model: effectiveModel,
+                family: getModelFamily(effectiveModel),
                 projectId: (parsedBody.project as string) || projectId,
                 streaming,
                 requestId: generateRequestId(),
@@ -258,7 +270,7 @@ export async function prepareAntigravityRequest(
             transformDebugInfo = result.debugInfo;
 
             if (transformDebugInfo) {
-                log.debug("Using transformer (wrapped)", { transformer: transformDebugInfo.transformer, model: effectiveModel, toolCount: transformDebugInfo.toolCount });
+                log.debug("Using transformer (wrapped)", { transformer: transformDebugInfo.transformer, model: effectiveModel, family: context.family, toolCount: transformDebugInfo.toolCount });
             }
         } else {
             const wrappedBody = {
@@ -275,6 +287,7 @@ export async function prepareAntigravityRequest(
       } else {
         const context: TransformContext = {
           model: effectiveModel,
+          family: getModelFamily(effectiveModel),
           projectId,
           streaming,
           requestId: generateRequestId(),
@@ -289,7 +302,7 @@ export async function prepareAntigravityRequest(
         transformDebugInfo = result.debugInfo;
 
         if (transformDebugInfo) {
-          log.debug("Using transformer", { transformer: transformDebugInfo.transformer, model: effectiveModel, toolCount: transformDebugInfo.toolCount });
+          log.debug("Using transformer", { transformer: transformDebugInfo.transformer, model: effectiveModel, family: context.family, toolCount: transformDebugInfo.toolCount });
         }
       }
     } catch (error) {
@@ -347,6 +360,7 @@ export async function transformAntigravityResponse(
   const contentType = response.headers.get("content-type") ?? "";
   const isJsonResponse = contentType.includes("application/json");
   const isEventStreamResponse = contentType.includes("text/event-stream");
+  const family: ModelFamily = requestedModel ? getModelFamily(requestedModel) : "gemini";
 
   if (!isJsonResponse && !isEventStreamResponse) {
     logAntigravityDebugResponse(debugContext, response, {
@@ -383,7 +397,7 @@ export async function transformAntigravityResponse(
 
     const transformedBody = response.body
       .pipeThrough(new TextDecoderStream())
-      .pipeThrough(createSseTransformStream(errorHandler, sessionId))
+      .pipeThrough(createSseTransformStream(errorHandler, sessionId, family))
       .pipeThrough(new TextEncoderStream());
 
     return new Response(transformedBody, {
@@ -426,9 +440,9 @@ export async function transformAntigravityResponse(
                  });
              }
              if (fullText && signature) {
-                 cacheSignature(sessionId, fullText, signature);
-                 log.debug("Cached signature", { sessionId, textLen: fullText.length });
-             }
+                  cacheSignature(family, sessionId, fullText, signature);
+                  log.debug("Cached signature", { family, sessionId, textLen: fullText.length });
+              }
          });
       }
     }
