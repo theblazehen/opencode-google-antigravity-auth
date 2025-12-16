@@ -466,7 +466,7 @@ export function createAntigravityFetch(
 
       if (result.type === "rate-limit") {
         if (accountCount === 1) {
-          const waitMs = result.retryAfterMs || accountManager.getMinWaitTime() || 60000;
+          const waitMs = result.retryAfterMs || accountManager.getMinWaitTime() || 1000;
           log.info("Single account rate-limited, retrying after backoff", { waitMs, waitSec: Math.ceil(waitMs / 1000) });
           await sleepWithBackoff(waitMs, abortSignal);
         }
