@@ -1,6 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { AccountManager } from "./accounts";
+import { AccountManager, type ModelFamily } from "./accounts";
 import type { OAuthAuthDetails } from "./types";
+
+const FAMILY: ModelFamily = "gemini";
 
 describe("AccountManager", () => {
   it("should initialize with single account", () => {
@@ -36,8 +38,8 @@ describe("AccountManager", () => {
     };
 
     const manager = new AccountManager(auth);
-    const account = manager.getCurrentOrNext();
-    
+    const account = manager.getCurrentOrNextForFamily(FAMILY);
+
     expect(account).not.toBeNull();
     expect(account?.index).toBe(0);
   });
@@ -51,13 +53,11 @@ describe("AccountManager", () => {
     };
 
     const manager = new AccountManager(auth);
-    const firstAccount = manager.getCurrentOrNext();
-    
-    // Rate-limit first account
-    manager.markRateLimited(firstAccount!, 60000);
-    
-    // Should switch to second account
-    const secondAccount = manager.getCurrentOrNext();
+    const firstAccount = manager.getCurrentOrNextForFamily(FAMILY);
+
+    manager.markRateLimited(firstAccount!, 60000, FAMILY);
+
+    const secondAccount = manager.getCurrentOrNextForFamily(FAMILY);
     expect(secondAccount?.index).toBe(1);
   });
 
@@ -70,12 +70,11 @@ describe("AccountManager", () => {
     };
 
     const manager = new AccountManager(auth);
-    
-    // Rate-limit all accounts
+
     const accounts = manager.getAccounts();
-    accounts.forEach(acc => manager.markRateLimited(acc, 60000));
-    
-    const next = manager.getCurrentOrNext();
+    accounts.forEach((acc) => manager.markRateLimited(acc, 60000, FAMILY));
+
+    const next = manager.getCurrentOrNextForFamily(FAMILY);
     expect(next).toBeNull();
   });
 
@@ -88,16 +87,13 @@ describe("AccountManager", () => {
     };
 
     const manager = new AccountManager(auth);
-    const account = manager.getCurrentOrNext();
-    
-    // Rate-limit with past timeout (already expired)
-    account!.isRateLimited = true;
-    account!.rateLimitResetTime = Date.now() - 1000; // 1 second ago
-    
-    // Should be available again
-    const next = manager.getCurrentOrNext();
+    const account = manager.getCurrentOrNextForFamily(FAMILY);
+
+    account!.rateLimitResetTimes[FAMILY] = Date.now() - 1000;
+
+    const next = manager.getCurrentOrNextForFamily(FAMILY);
     expect(next).not.toBeNull();
-    expect(next?.isRateLimited).toBe(false);
+    expect(next?.rateLimitResetTimes[FAMILY]).toBeUndefined();
   });
 
   it("should calculate minimum wait time correctly", () => {
@@ -110,13 +106,11 @@ describe("AccountManager", () => {
 
     const manager = new AccountManager(auth);
     const accounts = manager.getAccounts();
-    
-    // Rate-limit first account for 30s, second for 60s
-    manager.markRateLimited(accounts[0]!, 30000);
-    manager.markRateLimited(accounts[1]!, 60000);
-    
-    const waitTime = manager.getMinWaitTime();
-    // Should return the minimum (30s), allowing some tolerance for execution time
+
+    manager.markRateLimited(accounts[0]!, 30000, FAMILY);
+    manager.markRateLimited(accounts[1]!, 60000, FAMILY);
+
+    const waitTime = manager.getMinWaitTimeForFamily(FAMILY);
     expect(waitTime).toBeGreaterThanOrEqual(29000);
     expect(waitTime).toBeLessThanOrEqual(30000);
   });
@@ -130,12 +124,33 @@ describe("AccountManager", () => {
     };
 
     const manager = new AccountManager(auth);
-    
+
     const beforeTime = Date.now();
-    const account = manager.getCurrentOrNext();
+    const account = manager.getCurrentOrNextForFamily(FAMILY);
     const afterTime = Date.now();
-    
+
     expect(account?.lastUsed).toBeGreaterThanOrEqual(beforeTime);
     expect(account?.lastUsed).toBeLessThanOrEqual(afterTime);
+  });
+
+  it("should track rate limits per model family", () => {
+    const auth: OAuthAuthDetails = {
+      type: "oauth",
+      refresh: "refresh_1|project_1",
+      access: "access_1",
+      expires: Date.now() + 3600000,
+    };
+
+    const manager = new AccountManager(auth);
+    const account = manager.getCurrentOrNextForFamily("claude");
+
+    manager.markRateLimited(account!, 60000, "claude");
+
+    const claudeAccount = manager.getCurrentOrNextForFamily("claude");
+    expect(claudeAccount).toBeNull();
+
+    const geminiAccount = manager.getCurrentOrNextForFamily("gemini");
+    expect(geminiAccount).not.toBeNull();
+    expect(geminiAccount?.index).toBe(0);
   });
 });

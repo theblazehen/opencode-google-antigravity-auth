@@ -5,7 +5,14 @@ import { createLogger } from "./logger";
 
 const log = createLogger("storage");
 
-export interface AccountMetadata {
+export type ModelFamily = "claude" | "gemini";
+
+export interface RateLimitState {
+  claude?: number;
+  gemini?: number;
+}
+
+export interface AccountMetadataV1 {
   email?: string;
   refreshToken: string;
   projectId?: string;
@@ -17,66 +24,105 @@ export interface AccountMetadata {
   rateLimitResetTime?: number;
 }
 
-export interface AccountStorage {
+export interface AccountStorageV1 {
   version: 1;
+  accounts: AccountMetadataV1[];
+  activeIndex: number;
+}
+
+export interface AccountMetadata {
+  email?: string;
+  refreshToken: string;
+  projectId?: string;
+  managedProjectId?: string;
+  addedAt: number;
+  lastUsed: number;
+  lastSwitchReason?: "rate-limit" | "initial" | "rotation";
+  rateLimitResetTimes?: RateLimitState;
+}
+
+export interface AccountStorage {
+  version: 2;
   accounts: AccountMetadata[];
   activeIndex: number;
 }
 
-/**
- * Get the path to the OpenCode data directory.
- * Uses XDG Base Directory spec on Unix (~/.local/share), AppData on Windows.
- * This follows the same convention as auth.json storage.
- */
+type AnyAccountStorage = AccountStorageV1 | AccountStorage;
+
 function getDataDir(): string {
   const platform = process.platform;
-  
+
   if (platform === "win32") {
     return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "opencode");
   }
-  
-  // Unix-like systems (Linux, macOS)
-  // Use XDG_DATA_HOME (~/.local/share) to store alongside auth.json
+
   const xdgData = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
   return join(xdgData, "opencode");
 }
 
-/**
- * Get the full path to the antigravity accounts storage file.
- */
 export function getStoragePath(): string {
   return join(getDataDir(), "antigravity-accounts.json");
 }
 
-/**
- * Load account metadata from storage.
- * Returns null if file doesn't exist or is invalid.
- */
+function migrateV1ToV2(v1: AccountStorageV1): AccountStorage {
+  return {
+    version: 2,
+    accounts: v1.accounts.map((acc) => {
+      const rateLimitResetTimes: RateLimitState = {};
+      if (acc.isRateLimited && acc.rateLimitResetTime && acc.rateLimitResetTime > Date.now()) {
+        rateLimitResetTimes.claude = acc.rateLimitResetTime;
+        rateLimitResetTimes.gemini = acc.rateLimitResetTime;
+      }
+      return {
+        email: acc.email,
+        refreshToken: acc.refreshToken,
+        projectId: acc.projectId,
+        managedProjectId: acc.managedProjectId,
+        addedAt: acc.addedAt,
+        lastUsed: acc.lastUsed,
+        lastSwitchReason: acc.lastSwitchReason,
+        rateLimitResetTimes: Object.keys(rateLimitResetTimes).length > 0 ? rateLimitResetTimes : undefined,
+      };
+    }),
+    activeIndex: v1.activeIndex,
+  };
+}
+
 export async function loadAccounts(): Promise<AccountStorage | null> {
   try {
     const path = getStoragePath();
     const content = await fs.readFile(path, "utf-8");
-    const data = JSON.parse(content) as AccountStorage;
-    
-    // Validate structure
-    if (data.version !== 1 || !Array.isArray(data.accounts)) {
+    const data = JSON.parse(content) as AnyAccountStorage;
+
+    if (!Array.isArray(data.accounts)) {
       log.warn("Invalid storage format, ignoring");
       return null;
     }
 
-    // Validate activeIndex bounds (corrupt file safety)
-    if (typeof data.activeIndex !== "number" || !Number.isInteger(data.activeIndex)) {
-      data.activeIndex = 0;
+    let storage: AccountStorage;
+
+    if (data.version === 1) {
+      log.info("Migrating account storage from v1 to v2");
+      storage = migrateV1ToV2(data);
+      await saveAccounts(storage);
+    } else if (data.version === 2) {
+      storage = data;
+    } else {
+      log.warn("Unknown storage version, ignoring", { version: (data as { version?: unknown }).version });
+      return null;
     }
 
-    if (data.activeIndex < 0 || data.activeIndex >= data.accounts.length) {
-      data.activeIndex = 0;
+    if (typeof storage.activeIndex !== "number" || !Number.isInteger(storage.activeIndex)) {
+      storage.activeIndex = 0;
     }
 
-    return data;
+    if (storage.activeIndex < 0 || storage.activeIndex >= storage.accounts.length) {
+      storage.activeIndex = 0;
+    }
+
+    return storage;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      // File doesn't exist yet, this is normal on first run
       return null;
     }
     log.error("Failed to load account storage", { error: String(error) });
@@ -84,17 +130,12 @@ export async function loadAccounts(): Promise<AccountStorage | null> {
   }
 }
 
-/**
- * Save account metadata to storage.
- */
 export async function saveAccounts(storage: AccountStorage): Promise<void> {
   try {
     const path = getStoragePath();
-    
-    // Ensure directory exists
+
     await fs.mkdir(dirname(path), { recursive: true });
-    
-    // Write with pretty formatting for debugging
+
     const content = JSON.stringify(storage, null, 2);
     await fs.writeFile(path, content, "utf-8");
   } catch (error) {
@@ -103,18 +144,14 @@ export async function saveAccounts(storage: AccountStorage): Promise<void> {
   }
 }
 
-/**
- * Migrate from multi-account refresh string to storage format.
- * This is used when storage doesn't exist but auth.json has multi-account data.
- */
 export function migrateFromRefreshString(
   accountsData: Array<{ refreshToken: string; projectId?: string; managedProjectId?: string }>,
-  emails?: Array<string | undefined>
+  emails?: Array<string | undefined>,
 ): AccountStorage {
   const now = Date.now();
-  
+
   return {
-    version: 1,
+    version: 2,
     accounts: accountsData.map((acc, index) => ({
       email: emails?.[index],
       refreshToken: acc.refreshToken,

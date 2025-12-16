@@ -35,7 +35,7 @@ async function getAuthContext(
 
   const storedAccounts = await loadAccounts();
   const accountManager = new AccountManager(auth, storedAccounts);
-  const account = accountManager.getCurrentOrNext();
+  const account = accountManager.getCurrentOrNextForFamily("gemini");
   if (!account) {
     return null;
   }
@@ -337,7 +337,7 @@ export const AntigravityOAuthPlugin = async ({ client }: PluginContext): Promise
 
             try {
               await saveAccounts({
-                version: 1,
+                version: 2,
                 accounts: accounts.map((acc, index) => ({
                   email: acc.email,
                   refreshToken: acc.refresh,
