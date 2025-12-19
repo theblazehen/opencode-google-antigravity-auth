@@ -8,6 +8,7 @@ import {
   generateRequestId,
   getSessionId,
   parseGeminiApiBody,
+  recursivelyParseJsonStrings,
   rewriteGeminiPreviewAccessError,
   rewriteGeminiRateLimitError,
   type GeminiApiBody
@@ -95,11 +96,114 @@ function transformSseLine(line: string, onError?: (body: GeminiApiBody) => Gemin
     }
 
     if (body.response !== undefined) {
+      const responseObj = body.response as Record<string, unknown>;
+      normalizeToolArgsInResponse(body.response);
+
+      const candidates = (responseObj as any).candidates as unknown;
+        if (Array.isArray(candidates)) {
+          candidates.forEach((candidate: any, candidateIndex: number) => {
+            const parts = candidate?.content?.parts as unknown;
+            if (!Array.isArray(parts)) return;
+
+            const finishReason = candidate?.finishReason;
+
+            const functionCallNames: string[] = [];
+            const functionResponseNames: string[] = [];
+            let combinedText = "";
+
+            const summarizeArgs = (args: unknown): Record<string, unknown> => {
+              if (args === null) return { type: "null" };
+              if (args === undefined) return { type: "undefined" };
+              if (typeof args === "string") return { type: "string", length: args.length };
+              if (typeof args === "number" || typeof args === "boolean") return { type: typeof args };
+              if (Array.isArray(args)) return { type: "array", length: args.length };
+              if (typeof args === "object") {
+                const keys = Object.keys(args as Record<string, unknown>);
+                return { type: "object", keysPreview: keys.slice(0, 12), keyCount: keys.length };
+              }
+              return { type: typeof args };
+            };
+
+            let loggedToolParts = 0;
+
+            for (let partIndex = 0; partIndex < (parts as any[]).length; partIndex++) {
+              const part = (parts as any[])[partIndex];
+
+              const call = part?.functionCall;
+              const callName = call?.name;
+              if (typeof callName === "string") {
+                functionCallNames.push(callName);
+
+                if (loggedToolParts < 6) {
+                  loggedToolParts += 1;
+                  log.debug("SSE functionCall part", {
+                    candidateIndex,
+                    partIndex,
+                    finishReason,
+                    callName,
+                    hasThoughtSignature: typeof part?.thoughtSignature === "string",
+                    isThought: part?.thought === true,
+                    argsSummary: summarizeArgs(call?.args),
+                  });
+                }
+              }
+
+              const response = part?.functionResponse;
+              const responseName = response?.name;
+              if (typeof responseName === "string") {
+                functionResponseNames.push(responseName);
+
+                if (loggedToolParts < 6) {
+                  loggedToolParts += 1;
+                  log.debug("SSE functionResponse part", {
+                    candidateIndex,
+                    partIndex,
+                    finishReason,
+                    responseName,
+                    hasThoughtSignature: typeof part?.thoughtSignature === "string",
+                    isThought: part?.thought === true,
+                    responseSummary: summarizeArgs(response?.response),
+                  });
+                }
+              }
+
+              const text = part?.text;
+              if (typeof text === "string") combinedText += `${text}\n`;
+            }
+
+            if (functionCallNames.length > 0 || functionResponseNames.length > 0) {
+              log.debug("SSE tool parts observed", {
+                candidateIndex,
+                finishReason,
+                partCount: (parts as any[]).length,
+                functionCallNames: functionCallNames.slice(0, 8),
+                functionResponseNames: functionResponseNames.slice(0, 8),
+              });
+            }
+
+            const hasToolMarkerText = /(^|\n)\s*Tool:\s*\w+/i.test(combinedText) ||
+              (combinedText.includes("```") && combinedText.includes("Tool:"));
+            const hasThoughtPrefix = /(^|\n)\s*(?:thought|think)\s*:/i.test(combinedText);
+
+            if ((hasToolMarkerText || hasThoughtPrefix) && functionCallNames.length === 0) {
+              const preview = combinedText.length > 350 ? `${combinedText.slice(0, 350)}…` : combinedText;
+              log.debug("SSE possible tool-hallucination text (no functionCall)", {
+                candidateIndex,
+                finishReason,
+                hasToolMarkerText,
+                hasThoughtPrefix,
+                textPreview: preview,
+              });
+            }
+          });
+        }
+
+
       const responseStr = JSON.stringify(body.response);
       if (responseStr.includes('"thought"') || responseStr.includes('"thinking"')) {
         log.debug("Found thinking content in response", { preview: responseStr.slice(0, 500) });
       }
-      const responseObj = body.response as Record<string, unknown>;
+
       if (responseObj.usageMetadata) {
         const usage = responseObj.usageMetadata as Record<string, unknown>;
         if (typeof usage.cachedContentTokenCount === "number" && usage.cachedContentTokenCount > 0) {
@@ -112,9 +216,145 @@ function transformSseLine(line: string, onError?: (body: GeminiApiBody) => Gemin
   return line;
 }
 
+type ScrubResult = { cleaned: string; removedLines: number; removedBlocks: number };
+
+function scrubToolTranscriptArtifacts(text: string): ScrubResult {
+  const lines = text.split("\n");
+  const output: string[] = [];
+
+  let removedLines = 0;
+  let removedBlocks = 0;
+
+  let inFence = false;
+  let fenceStart = "";
+  let fenceLines: string[] = [];
+
+  const isMarkerLine = (line: string): boolean => {
+    return /^\s*Tool:\s*\w+/i.test(line) || /^\s*(?:thought|think)\s*:/i.test(line);
+  };
+
+  for (const line of lines) {
+    const isFence = line.trim().startsWith("```");
+
+    if (isFence) {
+      if (!inFence) {
+        inFence = true;
+        fenceStart = line;
+        fenceLines = [];
+        continue;
+      }
+
+      const hadMarker = fenceLines.some(isMarkerLine);
+      const cleanedFenceLines: string[] = [];
+      for (const fenceLine of fenceLines) {
+        if (isMarkerLine(fenceLine)) {
+          removedLines += 1;
+        } else {
+          cleanedFenceLines.push(fenceLine);
+        }
+      }
+
+      const hasNonWhitespace = cleanedFenceLines.some((l) => l.trim().length > 0);
+      if (hadMarker && !hasNonWhitespace) {
+        removedBlocks += 1;
+      } else {
+        output.push(fenceStart);
+        output.push(...cleanedFenceLines);
+        output.push(line);
+      }
+
+      inFence = false;
+      fenceStart = "";
+      fenceLines = [];
+      continue;
+    }
+
+    if (inFence) {
+      fenceLines.push(line);
+      continue;
+    }
+
+    if (isMarkerLine(line)) {
+      removedLines += 1;
+      continue;
+    }
+
+    output.push(line);
+  }
+
+  if (inFence) {
+    // Unclosed fence: keep content as-is.
+    output.push(fenceStart);
+    output.push(...fenceLines);
+  }
+
+  const cleaned = output.join("\n").replace(/\n{4,}/g, "\n\n\n");
+  return { cleaned, removedLines, removedBlocks };
+}
+
+function normalizeToolArgsInResponse(response: unknown): void {
+  if (!response || typeof response !== "object") return;
+
+  const candidates = (response as Record<string, unknown>).candidates as unknown;
+  if (!Array.isArray(candidates)) return;
+
+  let scrubbedParts = 0;
+  let removedLines = 0;
+  let removedBlocks = 0;
+
+  for (const candidate of candidates) {
+    const parts = (candidate as any)?.content?.parts as unknown;
+    if (!Array.isArray(parts)) continue;
+
+    for (const part of parts) {
+      const text = (part as any)?.text;
+      if (typeof text === "string") {
+        const scrubbed = scrubToolTranscriptArtifacts(text);
+        if (scrubbed.removedLines > 0 || scrubbed.removedBlocks > 0) {
+          (part as any).text = scrubbed.cleaned;
+          scrubbedParts += 1;
+          removedLines += scrubbed.removedLines;
+          removedBlocks += scrubbed.removedBlocks;
+        }
+      }
+
+      const functionCall = (part as any)?.functionCall;
+      if (functionCall && "args" in functionCall) {
+        const beforeArgs = functionCall.args;
+        const afterArgs = recursivelyParseJsonStrings(beforeArgs);
+        functionCall.args = afterArgs;
+
+        if (typeof beforeArgs === "string" && beforeArgs !== afterArgs) {
+          log.debug("Parsed functionCall.args JSON string", { name: functionCall.name });
+        }
+      }
+
+      const functionResponse = (part as any)?.functionResponse;
+      if (functionResponse && "response" in functionResponse) {
+        const beforeResponse = functionResponse.response;
+        const afterResponse = recursivelyParseJsonStrings(beforeResponse);
+        functionResponse.response = afterResponse;
+
+        if (typeof beforeResponse === "string" && beforeResponse !== afterResponse) {
+          log.debug("Parsed functionResponse.response JSON string", { name: functionResponse.name });
+        }
+      }
+    }
+  }
+
+  if (scrubbedParts > 0) {
+    log.debug("Scrubbed tool transcript artifacts from response text", {
+      scrubbedParts,
+      removedLines,
+      removedBlocks,
+    });
+  }
+}
+
 export function createSseTransformStream(onError?: (body: GeminiApiBody) => GeminiApiBody | null, sessionId?: string, family?: ModelFamily): TransformStream<string, string> {
   let buffer = "";
   const thoughtBuffers = new Map<number, string>();
+  let sseEventSeq = 0;
 
   return new TransformStream<string, string>({
     transform(chunk, controller) {
@@ -123,41 +363,81 @@ export function createSseTransformStream(onError?: (body: GeminiApiBody) => Gemi
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
+        const eventSeq = sseEventSeq++;
+
         const transformed = transformSseLine(line, onError, (body) => {
           if (!sessionId || !family) return;
           const response = body.response as any;
           if (!response?.candidates) return;
 
-          response.candidates.forEach((candidate: any, index: number) => {
+          response.candidates.forEach((candidate: any, candidateIndex: number) => {
             if (candidate.groundingMetadata) {
-              log.debug("SSE Grounding metadata found", { groundingMetadata: candidate.groundingMetadata });
-            }
-            if (candidate.content?.parts) {
-              candidate.content.parts.forEach((part: any) => {
-                if (part.thought) {
-                  if (part.text) {
-                    const current = thoughtBuffers.get(index) ?? "";
-                    thoughtBuffers.set(index, current + part.text);
-                  }
-                  if (part.thoughtSignature) {
-                    const fullText = thoughtBuffers.get(index) ?? "";
-                    if (fullText) {
-                      cacheSignature(family, sessionId, fullText, part.thoughtSignature);
-                      log.debug("Cached signature from thought part", { family, textLen: fullText.length });
-                    }
-                  }
-                }
-                if (part.thoughtSignature && !part.thought) {
-                  const fullText = thoughtBuffers.get(index) ?? "";
-                  if (fullText) {
-                    cacheSignature(family, sessionId, fullText, part.thoughtSignature);
-                    log.debug("Cached signature from separate part", { family, textLen: fullText.length });
-                  }
-                }
+              log.debug("SSE Grounding metadata found", {
+                eventSeq,
+                candidateIndex,
+                groundingMetadata: candidate.groundingMetadata,
               });
             }
+
+            if (!candidate.content?.parts) return;
+
+            let loggedToolParts = 0;
+
+            candidate.content.parts.forEach((part: any, partIndex: number) => {
+              if (part.thought) {
+                if (part.text) {
+                  const current = thoughtBuffers.get(candidateIndex) ?? "";
+                  thoughtBuffers.set(candidateIndex, current + part.text);
+                }
+
+                if (part.thoughtSignature) {
+                  const fullText = thoughtBuffers.get(candidateIndex) ?? "";
+                  if (fullText) {
+                    cacheSignature(family, sessionId, fullText, part.thoughtSignature);
+                    log.debug("Cached signature from thought part", {
+                      eventSeq,
+                      candidateIndex,
+                      partIndex,
+                      family,
+                      textLen: fullText.length,
+                      signatureLen: String(part.thoughtSignature).length,
+                    });
+                  }
+                }
+
+                return;
+              }
+
+              if (part?.functionCall && loggedToolParts < 6) {
+                loggedToolParts += 1;
+                log.debug("SSE observed functionCall (stream)", {
+                  eventSeq,
+                  candidateIndex,
+                  partIndex,
+                  name: part.functionCall?.name,
+                  hasThoughtSignature: typeof part.thoughtSignature === "string",
+                });
+              }
+
+              if (part?.thoughtSignature && !part.thought) {
+                const fullText = thoughtBuffers.get(candidateIndex) ?? "";
+                if (fullText) {
+                  cacheSignature(family, sessionId, fullText, part.thoughtSignature);
+                  log.debug("Cached signature from separate part", {
+                    eventSeq,
+                    candidateIndex,
+                    partIndex,
+                    family,
+                    textLen: fullText.length,
+                    signatureLen: String(part.thoughtSignature).length,
+                    hasFunctionCall: Boolean(part?.functionCall),
+                  });
+                }
+              }
+            });
           });
         });
+
         controller.enqueue(transformed + "\n");
       }
     },
@@ -196,7 +476,9 @@ export async function prepareAntigravityRequest(
     // Merge headers from Request object
     const reqHeaders = new Headers(input.headers);
     if (init?.headers) {
-      new Headers(init.headers).forEach((value, key) => reqHeaders.set(key, value));
+      new Headers(init.headers).forEach((value, key) => {
+        reqHeaders.set(key, value);
+      });
     }
     requestInit.headers = reqHeaders;
 
@@ -310,9 +592,8 @@ export async function prepareAntigravityRequest(
     }
   }
 
-  if (streaming) {
-    headers.set("Accept", "text/event-stream");
-  }
+  headers.set("Content-Type", "application/json");
+  headers.set("Accept", streaming ? "text/event-stream" : "application/json");
 
   // Add interleaved thinking header for Claude thinking models
   if (effectiveModel.includes("claude") && effectiveModel.includes("thinking")) {
@@ -499,6 +780,7 @@ export async function transformAntigravityResponse(
     }
 
     if (effectiveBody?.response !== undefined) {
+      normalizeToolArgsInResponse(effectiveBody.response);
       return new Response(JSON.stringify(effectiveBody.response), init);
     }
 

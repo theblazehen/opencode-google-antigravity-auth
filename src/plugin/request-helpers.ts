@@ -265,3 +265,82 @@ export function toUrlString(value: RequestInfo): string {
   }
   return value.toString();
 }
+
+function safeJsonParse(text: string): unknown {
+  return JSON.parse(text) as unknown;
+}
+
+export function recursivelyParseJsonStrings(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => recursivelyParseJsonStrings(item));
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(record).map(([key, inner]) => [key, recursivelyParseJsonStrings(inner)]),
+    );
+  }
+
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const stripped = value.trim();
+
+  const hasControlCharEscapes = value.includes("\\n") || value.includes("\\t");
+  const hasIntentionalEscapes = value.includes('\\"') || value.includes("\\\\");
+
+  if (hasControlCharEscapes && !hasIntentionalEscapes) {
+    try {
+      const unescaped = safeJsonParse(`"${value.replaceAll('"', '\\"')}"`);
+      if (typeof unescaped === "string") {
+        return unescaped;
+      }
+    } catch {
+      // Fall through to other processing.
+    }
+  }
+
+  if (stripped && (stripped.startsWith("{") || stripped.startsWith("["))) {
+    const isWellFormed =
+      (stripped.startsWith("{") && stripped.endsWith("}")) || (stripped.startsWith("[") && stripped.endsWith("]"));
+
+    if (isWellFormed) {
+      try {
+        const parsed = safeJsonParse(value);
+        return recursivelyParseJsonStrings(parsed);
+      } catch {
+        // Continue to malformed cases.
+      }
+    }
+
+    if (stripped.startsWith("[") && !stripped.endsWith("]")) {
+      try {
+        const lastBracket = stripped.lastIndexOf("]");
+        if (lastBracket > 0) {
+          const cleaned = stripped.slice(0, lastBracket + 1);
+          const parsed = safeJsonParse(cleaned);
+          return recursivelyParseJsonStrings(parsed);
+        }
+      } catch {
+        // Ignore.
+      }
+    }
+
+    if (stripped.startsWith("{") && !stripped.endsWith("}")) {
+      try {
+        const lastBrace = stripped.lastIndexOf("}");
+        if (lastBrace > 0) {
+          const cleaned = stripped.slice(0, lastBrace + 1);
+          const parsed = safeJsonParse(cleaned);
+          return recursivelyParseJsonStrings(parsed);
+        }
+      } catch {
+        // Ignore.
+      }
+    }
+  }
+
+  return value;
+}
